@@ -1,5 +1,6 @@
 package be.nabu.libs.services.jdbc.api;
 
+import java.net.URI;
 import java.sql.Types;
 import java.util.Date;
 import java.util.UUID;
@@ -12,7 +13,7 @@ public interface SQLDialect {
 	public String buildCreateSQL(ComplexType type);
 	
 	public default Integer getSQLType(Class<?> instanceClass) {
-		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass)) {
+		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass)) {
 			return Types.VARCHAR;
 		}
 		else if (byte[].class.isAssignableFrom(instanceClass)) {
@@ -48,7 +49,7 @@ public interface SQLDialect {
 	}
 	
 	public default String getSQLName(Class<?> instanceClass) {
-		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass)) {
+		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass)) {
 			return "varchar";
 		}
 		else if (byte[].class.isAssignableFrom(instanceClass)) {
