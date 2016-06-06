@@ -12,7 +12,6 @@ import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.TimeZone;
-import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -30,6 +29,7 @@ import be.nabu.libs.services.api.ServiceException;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.Transactionable;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
+import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.CollectionHandlerFactory;
 import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.CollectionHandlerProvider;
@@ -229,6 +229,10 @@ public class JDBCServiceInstance implements ServiceInstance {
 								}
 							}
 							else {
+								SQLDialect dialect = dataSourceProvider.getDialect();
+								if (dialect == null) {
+									dialect = new DefaultDialect();
+								}
 								// check if there is some known conversion logic
 								// anything else is given straight to the JDBC adapter in the hopes that it can handle the type
 								if (value != null) {
@@ -236,14 +240,14 @@ public class JDBCServiceInstance implements ServiceInstance {
 									// IMPORTANT: this bit of code assumes the database supports the setting of an object array instead of a single value
 									// some databases support this, some don't so it depends on the database and more specifically its driver
 									if (isList) {
-										Integer sqlType = getSQLType(simpleType.getInstanceClass());
+										String sqlTypeName = dialect.getSQLName(simpleType.getInstanceClass());
 										CollectionHandlerProvider provider = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
 										if (provider == null) {
 											throw new RuntimeException("Unknown collection type: " + value.getClass());
 										}
 										Collection collection = provider.getAsCollection(value);
 										// most databases that do support object arrays don't support untyped object arrays, so if we can't deduce the sql type, this will very likely fail
-										if (sqlType == null) {
+										if (sqlTypeName == null) {
 											logger.warn("Could not map instance class to native SQL type: {}", simpleType.getInstanceClass());
 											if (collection.isEmpty()) {
 												statement.setObject(index++, null);		
@@ -254,12 +258,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 										}
 										else {
 											if (collection.isEmpty()) {
-												statement.setNull(index++, sqlType);
+												statement.setNull(index++, dialect.getSQLType(simpleType.getInstanceClass()), sqlTypeName);
 											}
 											else {
 												// we can either create an array that is specific to the database
 												// note: even using this construct you can not do "where a in (?)" but instead need to do "where a = any(?)" (at least for postgresql)
-												java.sql.Array array = connection.createArrayOf(getSQLType(sqlType), collection.toArray());
+												java.sql.Array array = connection.createArrayOf(sqlTypeName, collection.toArray());
 												statement.setObject(index++, array, Types.ARRAY);
 												
 												// or simply pass an object array and hope it works...
@@ -281,7 +285,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 									}
 								}
 								else {
-									Integer sqlType = getSQLType(simpleType.getInstanceClass());
+									Integer sqlType = dialect.getSQLType(simpleType.getInstanceClass());
 									// could not perform a mapping, just pass it to the driver and hope it can figure it out
 									if (sqlType == null) {
 										logger.warn("Could not map instance class to native SQL type: {}", simpleType.getInstanceClass());
@@ -426,67 +430,6 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 			}
 		}
-	}
-
-	/**
-	 * Currently this is mostly for array generation, and as the documentation of Connection states, the value is generally database-specific
-	 * In theory this should move to the dialect but for now we only use standard types which are (hopefully) the same across databases
-	 */
-	public static String getSQLType(Integer integer) {
-		switch(integer) {
-			case Types.VARBINARY: return "varbinary";
-			case Types.INTEGER: return "integer";
-			case Types.BIGINT: return "bigint";
-			case Types.DOUBLE: return "double";
-			case Types.FLOAT: return "float";
-			case Types.SMALLINT: return "smallint";
-			case Types.BOOLEAN: return "boolean";
-			case Types.TIMESTAMP: return "timestamp";
-			case Types.OTHER: return "other";
-			default: return "varchar";
-		}
-	}
-	
-	public static Integer getPredefinedSQLType(Class<?> instanceClass) {
-		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass)) {
-			return Types.VARCHAR;
-		}
-		else if (byte[].class.isAssignableFrom(instanceClass)) {
-			return Types.VARBINARY;
-		}
-		else if (Integer.class.isAssignableFrom(instanceClass)) {
-			return Types.INTEGER;
-		}
-		else if (Long.class.isAssignableFrom(instanceClass)) {
-			return Types.BIGINT;
-		}
-		else if (Double.class.isAssignableFrom(instanceClass)) {
-			return Types.DOUBLE;
-		}
-		else if (Float.class.isAssignableFrom(instanceClass)) {
-			return Types.FLOAT;
-		}
-		else if (Short.class.isAssignableFrom(instanceClass)) {
-			return Types.SMALLINT;
-		}
-		else if (Boolean.class.isAssignableFrom(instanceClass)) {
-			return Types.BOOLEAN;
-		}
-		else if (UUID.class.isAssignableFrom(instanceClass)) {
-			return Types.OTHER;
-		}
-		else if (Date.class.isAssignableFrom(instanceClass)) {
-			return Types.TIMESTAMP;
-		}
-		else {
-			return null;
-		}
-	}
-	private Integer getSQLType(Class<?> instanceClass) {
-		if (getDefinition().getTypeConversions().containsKey(instanceClass)) {
-			instanceClass = getDefinition().getTypeConversions().get(instanceClass);
-		}
-		return getPredefinedSQLType(instanceClass);
 	}
 
 	@Override
