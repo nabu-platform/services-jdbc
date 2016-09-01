@@ -5,12 +5,14 @@ import java.sql.Types;
 import java.util.Date;
 import java.util.UUID;
 
+import be.nabu.libs.types.api.ComplexContent;
 import be.nabu.libs.types.api.ComplexType;
 
 public interface SQLDialect {
 	public String rewrite(String sql, ComplexType input, ComplexType output);
 	public String limit(String sql, Integer offset, Integer limit);
 	public String buildCreateSQL(ComplexType type);
+	public String buildInsertSQL(ComplexContent values);
 	
 	public default Integer getSQLType(Class<?> instanceClass) {
 		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass)) {
