@@ -1,6 +1,5 @@
 package be.nabu.libs.services.jdbc;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -49,15 +48,6 @@ public class JDBCService implements DefinedService {
 	 * We currently do not support multiple columns but we could if we dynamically generate new documents containing the lists instead of just a list of long
 	 */
 	private String generatedColumn;
-	
-	/**
-	 * Contains the type mappings of which non-native type maps to which native type
-	 * The conversion logic must be implemented in the converter framework
-	 * The reverse conversion is done automatically by assigning it to the complex type
-	 */
-	private Map<Class<?>, Class<?>> typeConversions = new HashMap<Class<?>, Class<?>>(); {
-		typeConversions.put(URI.class, String.class);
-	}
 	
 	public static final String CONNECTION = "connection";
 	public static final String TRANSACTION = "transaction";
@@ -325,10 +315,6 @@ public class JDBCService implements DefinedService {
 
 	public void setOutputGenerated(boolean isOutputGenerated) {
 		this.isOutputGenerated = isOutputGenerated;
-	}
-
-	public Map<Class<?>, Class<?>> getTypeConversions() {
-		return typeConversions;
 	}
 
 	public Boolean getValidateInput() {

@@ -6,7 +6,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
@@ -31,6 +30,7 @@ import be.nabu.libs.services.api.Transactionable;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.CollectionHandlerFactory;
+import be.nabu.libs.types.ComplexContentWrapperFactory;
 import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.CollectionHandlerProvider;
 import be.nabu.libs.types.api.ComplexContent;
@@ -122,9 +122,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			Object object = content == null ? null : content.get(JDBCService.PARAMETERS);
 			Collection<ComplexContent> parameters = null;
 			if (object != null) {
-				parameters = isBatch 
-					? (Collection<ComplexContent>) content.get(JDBCService.PARAMETERS)
-					: Arrays.asList((ComplexContent) content.get(JDBCService.PARAMETERS));
+				parameters = toContentCollection(object); 
 			}
 			String preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect());
 			
@@ -275,10 +273,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 										}
 									}
 									else {
-										for (Class<?> originalType : getDefinition().getTypeConversions().keySet()) {
-											if (originalType.isAssignableFrom(value.getClass())) {
-												value = converter.convert(value, getDefinition().getTypeConversions().get(originalType));
-												break;
+										Class<?> targetType = dialect.getTargetClass(value.getClass());
+										if (!targetType.equals(value.getClass())) {
+											value = converter.convert(value, targetType);
+											if (value == null) {
+												throw new RuntimeException("Could not convert the value to: " + targetType);
 											}
 										}
 										statement.setObject(index++, value);
@@ -432,6 +431,26 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 	}
 
+	@SuppressWarnings({ "unchecked", "rawtypes" })
+	private static Collection<ComplexContent> toContentCollection(Object object) {
+		List<ComplexContent> result = new ArrayList<ComplexContent>();
+		if (object instanceof Collection) {
+			for (Object child : (Collection) object) {
+				if (!(child instanceof ComplexContent)) {
+					child = ComplexContentWrapperFactory.getInstance().getWrapper().wrap(child);
+				}
+				result.add((ComplexContent) child);
+			}
+		}
+		else {
+			if (!(object instanceof ComplexContent)) {
+				object = ComplexContentWrapperFactory.getInstance().getWrapper().wrap(object);
+			}
+			result.add((ComplexContent) object);
+		}
+		return result;
+	}
+	
 	@Override
 	public JDBCService getDefinition() {
 		return definition;
