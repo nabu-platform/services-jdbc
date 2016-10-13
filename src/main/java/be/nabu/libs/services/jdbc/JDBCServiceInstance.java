@@ -456,7 +456,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		return definition;
 	}
 
-	private static class ConnectionTransactionable implements Transactionable {
+	public static class ConnectionTransactionable implements Transactionable {
 
 		private Connection connection;
 		private String id;
