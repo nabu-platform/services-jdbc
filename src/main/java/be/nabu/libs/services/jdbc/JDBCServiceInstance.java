@@ -3,13 +3,16 @@ package be.nabu.libs.services.jdbc;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,11 +25,14 @@ import be.nabu.libs.converter.api.Converter;
 import be.nabu.libs.metrics.api.MetricInstance;
 import be.nabu.libs.metrics.api.MetricTimer;
 import be.nabu.libs.property.ValueUtils;
+import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.ServiceRuntime;
 import be.nabu.libs.services.api.ExecutionContext;
 import be.nabu.libs.services.api.ServiceException;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.Transactionable;
+import be.nabu.libs.services.jdbc.api.ChangeSet;
+import be.nabu.libs.services.jdbc.api.ChangeType;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.CollectionHandlerFactory;
@@ -39,13 +45,15 @@ import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
 import be.nabu.libs.types.api.Unmarshallable;
 import be.nabu.libs.types.properties.ActualTypeProperty;
+import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.FormatProperty;
+import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.TimezoneProperty;
 import be.nabu.libs.types.utils.DateUtils;
 import be.nabu.libs.types.utils.DateUtils.Granularity;
 import be.nabu.libs.validator.api.Validation;
-import be.nabu.libs.validator.api.Validator;
 import be.nabu.libs.validator.api.ValidationMessage.Severity;
+import be.nabu.libs.validator.api.Validator;
 
 /**
  * TODO: add support for save points?
@@ -79,6 +87,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		MetricInstance metrics = executionContext.getMetricInstance(definition.getId());
 		
+		boolean trackChanges = content == null || content.get(JDBCService.TRACK_CHANGES) == null || (Boolean) content.get(JDBCService.TRACK_CHANGES);
 		JDBCDebugInformation debug = executionContext.isDebug() ? new JDBCDebugInformation() : null;
 		// get the connection id, you can override this at runtime
 		String connectionId = content == null ? null : (String) content.get(JDBCService.CONNECTION);
@@ -307,6 +316,86 @@ public class JDBCServiceInstance implements ServiceInstance {
 	
 				ComplexContent output = getDefinition().getOutput().newInstance();
 				if (isBatch) {
+					Element<?> primaryKey = null;
+					List<Object> primaryKeys = null;
+					StringBuilder selectBuilder = null;
+					Map<Object, Map<String, Object>> original = null;
+					String primaryKeyName = null;
+					List<Object> missing = null;
+					String tableName = null;
+					if (definition.getChangeTracker() != null && trackChanges) {
+						for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
+							Value<Boolean> property = element.getProperty(PrimaryKeyProperty.getInstance());
+							if (property != null && property.getValue()) {
+								primaryKey = element;
+								break;
+							}
+						}
+						if (primaryKey == null) {
+							throw new ServiceException("JDBC-8", "Can only track changes if the input object has a primary key");
+						}
+						primaryKeyName = uncamelify(primaryKey.getName());
+						int position = getDefinition().getInputNames().indexOf(primaryKey.getName());
+						if (position < 0) {
+							throw new ServiceException("JDBC-9", "Can not find the position of the primary key in the statement");
+						}
+						try {
+							// 1-based
+							tableName = statement.getMetaData().getTableName(position + 1);
+						}
+						catch (Exception e) {
+							logger.warn("Can not get table name from statement", e);
+						}
+						// best effort
+						if (tableName == null) {
+							tableName = ValueUtils.getValue(CollectionNameProperty.getInstance(), definition.getParameters().getProperties());
+							if (tableName == null) {
+								tableName = definition.getParameters().getName();
+							}
+						}
+						if (tableName == null) {
+							throw new ServiceException("JDBC-10", "Can not determine the table name for the change tracking");
+						}
+						selectBuilder = new StringBuilder();
+						selectBuilder.append("select * from " + tableName + " where");
+						boolean first = true;
+						primaryKeys = new ArrayList<Object>();
+						for (ComplexContent parameter : parameters) {
+							Object key = parameter.get(primaryKey.getName());
+							if (key == null) {
+								throw new ServiceException("JDBC-11", "No primary key present in the input");
+							}
+							primaryKeys.add(key);
+							if (first) {
+								first = false;
+							}
+							else {
+								selectBuilder.append(" or");
+							}
+							selectBuilder.append(" " + primaryKeyName + " = ?");
+						}
+						missing = new ArrayList<Object>(primaryKeys);
+						// if it is an insert statement, they should all be new, otherwise select them so we can track the changes
+						if (!preparedSql.trim().toLowerCase().startsWith("insert")) {
+							PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
+							for (int i = 0; i < primaryKeys.size(); i++) {
+								selectAll.setObject(i + 1, primaryKeys.get(i));
+							}
+							ResultSet executeQuery = selectAll.executeQuery();
+							original = new HashMap<Object, Map<String, Object>>();
+							ResultSetMetaData metaData = executeQuery.getMetaData();
+							int columnCount = metaData.getColumnCount();
+							while (executeQuery.next()) {
+								Map<String, Object> current = new HashMap<String, Object>();
+								for (int i = 1; i <= columnCount; i++) {
+									current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+								}
+								original.put(current.get(primaryKeyName), current);
+							}
+							missing.removeAll(original.keySet());
+						}
+					}
+					
 					MetricTimer timer = metrics == null ? null : metrics.start(METRIC_EXECUTION_TIME);
 					int[] executeBatch = statement.executeBatch();
 					int total = 0;
@@ -318,6 +407,64 @@ public class JDBCServiceInstance implements ServiceInstance {
 					if (debug != null) {
 						debug.setExecutionDuration(executionTime);
 						debug.setOutputAmount(total);
+					}
+					
+					if (definition.getChangeTracker() != null && trackChanges) {
+						PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
+						for (int i = 0; i < primaryKeys.size(); i++) {
+							selectAll.setObject(i + 1, primaryKeys.get(i));
+						}
+						ResultSet executeQuery = selectAll.executeQuery();
+						Map<Object, Map<String, Object>> updated = new HashMap<Object, Map<String, Object>>();
+						ResultSetMetaData metaData = executeQuery.getMetaData();
+						int columnCount = metaData.getColumnCount();
+						while (executeQuery.next()) {
+							Map<String, Object> current = new HashMap<String, Object>();
+							for (int i = 1; i <= columnCount; i++) {
+								current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+							}
+							updated.put(current.get(primaryKeyName), current);
+						}
+						List<Object> newMissing = new ArrayList<Object>(primaryKeys);
+						newMissing.removeAll(updated.keySet());
+						// don't take into account the ones that were already missing
+						newMissing.removeAll(missing);
+
+						List<ChangeSet> changesets = new ArrayList<ChangeSet>();
+						
+						// first the deleted
+						for (Object key : newMissing) {
+							changesets.add(new ChangeSetImpl(key, ChangeType.DELETE, original.get(key), null));
+						}
+						
+						// the newly created
+						for (Object key : missing) {
+							if (updated.containsKey(key)) {
+								changesets.add(new ChangeSetImpl(key, ChangeType.INSERT, null, updated.get(key)));
+								updated.remove(key);
+							}
+						}
+
+						// compare the old for updates
+						for (Object key : updated.keySet()) {
+							Map<String, Object> current = updated.get(key);
+							Map<String, Object> old = original.get(key);
+							for (String name : old.keySet()) {
+								Object currentValue = current.get(name);
+								Object oldValue = old.get(name);
+								// if it is unchanged, remove it from the new mapping
+								if (currentValue == null && oldValue == null || currentValue != null && currentValue.equals(oldValue)) {
+									current.remove(name);
+								}
+							}
+							// if something was updated, add it to the diff
+							if (!current.isEmpty()) {
+								changesets.add(new ChangeSetImpl(key, ChangeType.UPDATE, old, current));
+							}
+						}
+						if (!changesets.isEmpty()) {
+							definition.getChangeTracker().track(connectionId, transactionId, tableName, changesets);
+						}
 					}
 				}
 				else {
@@ -524,5 +671,26 @@ public class JDBCServiceInstance implements ServiceInstance {
 				rollback();
 			}
 		}
+	}
+	
+	public static String uncamelify(String string) {
+		StringBuilder builder = new StringBuilder();
+		boolean previousUpper = false;
+		for (int i = 0; i < string.length(); i++) {
+			String substring = string.substring(i, i + 1);
+			if (substring.equals(substring.toLowerCase()) || i == 0) {
+				previousUpper = !substring.equals(substring.toLowerCase());
+				builder.append(substring.toLowerCase());
+			}
+			else {
+				// if it is not preceded by a "_" or another capitilized
+				if (!string.substring(i - 1, i).equals("_") && !previousUpper) {
+					builder.append("_");
+				}
+				previousUpper = true;
+				builder.append(substring.toLowerCase());
+			}
+		}
+		return builder.toString();
 	}
 }

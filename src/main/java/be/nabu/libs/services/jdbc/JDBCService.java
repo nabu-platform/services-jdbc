@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 import be.nabu.libs.services.api.DefinedService;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.ServiceInterface;
+import be.nabu.libs.services.jdbc.api.ChangeTracker;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
 import be.nabu.libs.types.api.ComplexType;
@@ -55,8 +56,11 @@ public class JDBCService implements DefinedService {
 	public static final String RESULTS = "results";
 	public static final String OFFSET = "offset";
 	public static final String LIMIT = "limit";
+	public static final String TRACK_CHANGES = "trackChanges";
 	public static final String GENERATED_KEYS = "generatedKeys";
 	public static final String ROW_COUNT = "rowCount";
+	
+	private ChangeTracker changeTracker;
 	
 	private SimpleTypeWrapper wrapper = SimpleTypeWrapperFactory.getInstance().getWrapper();
 	
@@ -82,6 +86,7 @@ public class JDBCService implements DefinedService {
 			input.add(new SimpleElementImpl<String>(TRANSACTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new SimpleElementImpl<Integer>(OFFSET, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+			input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 		}
 		return input;
@@ -369,6 +374,14 @@ public class JDBCService implements DefinedService {
 			}
 		}
 		return builder.toString();
+	}
+
+	public ChangeTracker getChangeTracker() {
+		return changeTracker;
+	}
+
+	public void setChangeTracker(ChangeTracker changeTracker) {
+		this.changeTracker = changeTracker;
 	}
 
 }
