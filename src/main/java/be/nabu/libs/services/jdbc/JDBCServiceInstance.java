@@ -11,6 +11,7 @@ import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
@@ -341,7 +342,10 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 						try {
 							// 1-based
-							tableName = statement.getMetaData().getTableName(position + 1);
+							ResultSetMetaData metaData = statement.getMetaData();
+							if (metaData != null) {
+								tableName = metaData.getTableName(position + 1);
+							}
 						}
 						catch (Exception e) {
 							logger.warn("Can not get table name from statement", e);
@@ -351,6 +355,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 							tableName = ValueUtils.getValue(CollectionNameProperty.getInstance(), definition.getParameters().getProperties());
 							if (tableName == null) {
 								tableName = definition.getParameters().getName();
+							}
+							if (tableName != null) {
+								tableName = uncamelify(tableName);
 							}
 						}
 						if (tableName == null) {
@@ -440,6 +447,14 @@ public class JDBCServiceInstance implements ServiceInstance {
 						// the newly created
 						for (Object key : missing) {
 							if (updated.containsKey(key)) {
+								Map<String, Object> initial = updated.get(key);
+								Iterator<String> iterator = initial.keySet().iterator();
+								// remove the empty ones
+								while (iterator.hasNext()) {
+									if (initial.get(iterator.next()) == null) {
+										iterator.remove();
+									}
+								}
 								changesets.add(new ChangeSetImpl(key, ChangeType.INSERT, null, updated.get(key)));
 								updated.remove(key);
 							}
