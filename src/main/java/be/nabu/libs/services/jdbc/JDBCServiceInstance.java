@@ -46,6 +46,7 @@ import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
 import be.nabu.libs.types.api.Unmarshallable;
 import be.nabu.libs.types.properties.ActualTypeProperty;
+import be.nabu.libs.types.properties.AggregateProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.FormatProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
@@ -143,7 +144,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 			Integer offset = content == null ? null : (Integer) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
 			boolean nativeLimit = false;
-			if (offset != null || limit != null) {
+			// the limit is for selects
+			if (!isBatch && (offset != null || limit != null)) {
 				if (dataSourceProvider.getDialect() != null) {
 					String limitedSql = dataSourceProvider.getDialect().limit(preparedSql, offset, limit);
 					if (limitedSql != null) {
@@ -324,6 +326,60 @@ public class JDBCServiceInstance implements ServiceInstance {
 					String primaryKeyName = null;
 					List<Object> missing = null;
 					String tableName = null;
+					
+					// if limit is passed in for an insert, it acts as an amount delimiter in the database
+					if (limit != null && preparedSql.trim().toLowerCase().startsWith("insert")) {
+						// the key that has a collection aggregate set on it (owns relationship)
+						Element<?> aggregateKey = null;
+						for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
+							Value<String> aggregate = element.getProperty(AggregateProperty.getInstance());
+							if (aggregate != null && aggregate.equals("composite")) {
+								aggregateKey = element;
+								break;
+							}
+						}
+						if (aggregateKey == null) {
+							throw new ServiceException("JDBC-12", "Can only limit inserts if a composite aggregate is found");
+						}
+						if (tableName == null) {
+							int position = getDefinition().getInputNames().indexOf(aggregateKey.getName());
+							if (position < 0) {
+								throw new ServiceException("JDBC-13", "Can not find the position of the collection key in the statement");
+							}
+							tableName = getTableName(statement, position);
+						}
+						if (tableName == null) {
+							throw new ServiceException("JDBC-14", "Can not determine the table name for the limiting");
+						}
+						Map<Object, Integer> counts = new HashMap<Object, Integer>();
+						for (ComplexContent parameter : parameters) {
+							Object key = parameter.get(aggregateKey.getName());
+							// don't track if it doesn't have a value
+							if (key != null) {
+								if (!counts.containsKey(key)) {
+									counts.put(key, 1);
+								}
+								else {
+									counts.put(key, counts.get(key) + 1);
+								}
+							}
+						}
+						if (!counts.isEmpty()) {
+							String aggregateKeyName = uncamelify(aggregateKey.getName());
+							for (Object key : counts.keySet()) {
+								PreparedStatement countStatement = connection.prepareStatement("select count(*) from " + tableName + " where " + aggregateKeyName + " = ?");
+								countStatement.setObject(1, key);
+								ResultSet executeQuery = countStatement.executeQuery();
+								if (!executeQuery.next()) {
+									throw new ServiceException("JDBC-15", "Can not determine amount of elements in '" + tableName + "' for field " + aggregateKeyName + " = " + key);
+								}
+								long number = executeQuery.getLong(1);
+								if (counts.get(key) + number > limit) {
+									throw new ServiceException("JDBC-16", "Too many elements for table '" + tableName + "' field '" + aggregateKeyName + "' value '" + key + "', currently " + number + " in database and " + counts.get(key) + " would be added (> " + limit + ")");
+								}
+							}
+						}
+					}
 					if (definition.getChangeTracker() != null && trackChanges) {
 						for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
 							Value<Boolean> property = element.getProperty(PrimaryKeyProperty.getInstance());
@@ -336,29 +392,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 							throw new ServiceException("JDBC-8", "Can only track changes if the input object has a primary key");
 						}
 						primaryKeyName = uncamelify(primaryKey.getName());
-						int position = getDefinition().getInputNames().indexOf(primaryKey.getName());
-						if (position < 0) {
-							throw new ServiceException("JDBC-9", "Can not find the position of the primary key in the statement");
-						}
-						try {
-							// 1-based
-							ResultSetMetaData metaData = statement.getMetaData();
-							if (metaData != null) {
-								tableName = metaData.getTableName(position + 1);
-							}
-						}
-						catch (Exception e) {
-							logger.warn("Can not get table name from statement", e);
-						}
-						// best effort
 						if (tableName == null) {
-							tableName = ValueUtils.getValue(CollectionNameProperty.getInstance(), definition.getParameters().getProperties());
-							if (tableName == null) {
-								tableName = definition.getParameters().getName();
+							int position = getDefinition().getInputNames().indexOf(primaryKey.getName());
+							if (position < 0) {
+								throw new ServiceException("JDBC-9", "Can not find the position of the primary key in the statement");
 							}
-							if (tableName != null) {
-								tableName = uncamelify(tableName);
-							}
+							tableName = getTableName(statement, position);
 						}
 						if (tableName == null) {
 							throw new ServiceException("JDBC-10", "Can not determine the table name for the change tracking");
@@ -591,6 +630,31 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 			}
 		}
+	}
+
+	private String getTableName(PreparedStatement statement, int position) {
+		String tableName = null;
+		try {
+			// 1-based
+			ResultSetMetaData metaData = statement.getMetaData();
+			if (metaData != null) {
+				tableName = metaData.getTableName(position + 1);
+			}
+		}
+		catch (Exception e) {
+			logger.warn("Can not get table name from statement", e);
+		}
+		// best effort
+		if (tableName == null) {
+			tableName = ValueUtils.getValue(CollectionNameProperty.getInstance(), definition.getParameters().getProperties());
+			if (tableName == null) {
+				tableName = definition.getParameters().getName();
+			}
+			if (tableName != null) {
+				tableName = uncamelify(tableName);
+			}
+		}
+		return tableName;
 	}
 
 	@SuppressWarnings({ "unchecked", "rawtypes" })
