@@ -19,11 +19,13 @@ import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.Element;
+import be.nabu.libs.types.api.KeyValuePair;
 import be.nabu.libs.types.api.ModifiableComplexType;
 import be.nabu.libs.types.api.SimpleTypeWrapper;
 import be.nabu.libs.types.base.ComplexElementImpl;
 import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.base.ValueImpl;
+import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
 import be.nabu.libs.types.structure.DefinedStructure;
@@ -53,6 +55,7 @@ public class JDBCService implements DefinedService {
 	public static final String CONNECTION = "connection";
 	public static final String TRANSACTION = "transaction";
 	public static final String PARAMETERS = "parameters";
+	public static final String PROPERTIES = "properties";
 	public static final String RESULTS = "results";
 	public static final String OFFSET = "offset";
 	public static final String LIMIT = "limit";
@@ -88,6 +91,8 @@ public class JDBCService implements DefinedService {
 			input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
+			// allow a list of properties
+			input.add(new ComplexElementImpl(PROPERTIES, (ComplexType) BeanResolver.getInstance().resolve(KeyValuePair.class), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 		}
 		return input;
 	}
@@ -136,6 +141,17 @@ public class JDBCService implements DefinedService {
 		return messages;
 	}
 
+	String getPreparedSql(SQLDialect dialect, String sql) {
+		if (!preparedSql.containsKey(dialect)) {
+			synchronized(preparedSql) {
+				if (!preparedSql.containsKey(dialect)) {
+					preparedSql.put(dialect, (dialect == null ? sql : dialect.rewrite(sql, getParameters(), getResults())).replaceAll("(?<!:):[\\w]+", "?"));
+				}
+			}
+		}
+		return preparedSql.get(dialect);
+	}
+	
 	String getPreparedSql(SQLDialect dialect) {
 		if (sql == null) {
 			throw new RuntimeException("No SQL found for in service: " + getId());
@@ -254,6 +270,16 @@ public class JDBCService implements DefinedService {
 			getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0));
 		}
 		return messages;
+	}
+	
+	List<String> scanForPreparedVariables(String sql) {
+		Pattern pattern = Pattern.compile("(?<!:):[\\w]+");
+		Matcher matcher = pattern.matcher(sql);
+		List<String> inputNames = new ArrayList<String>();
+		while (matcher.find()) {
+			inputNames.add(matcher.group().substring(1));
+		}
+		return inputNames;
 	}
 	
 	List<String> getInputNames() {

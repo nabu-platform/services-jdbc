@@ -38,6 +38,7 @@ import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.CollectionHandlerFactory;
 import be.nabu.libs.types.ComplexContentWrapperFactory;
+import be.nabu.libs.types.SimpleTypeWrapperFactory;
 import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.CollectionHandlerProvider;
 import be.nabu.libs.types.api.ComplexContent;
@@ -45,6 +46,7 @@ import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
 import be.nabu.libs.types.api.Unmarshallable;
+import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.properties.ActualTypeProperty;
 import be.nabu.libs.types.properties.AggregateProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
@@ -135,11 +137,41 @@ public class JDBCServiceInstance implements ServiceInstance {
 			if (object != null) {
 				parameters = toContentCollection(object); 
 			}
-			String preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect());
+			String preparedSql = getDefinition().getSql();
 			
 			if (preparedSql == null) {
 				throw new ServiceException("JDBC-7", "No sql found for: " + definition.getId() + ", expecting rewritten: " + definition.getSql());
 			}
+
+			// map the additional properties to a map
+			Map<String, String> additional = new HashMap<String, String>();
+			List keyValuePairs = content == null ? null : (List) content.get(JDBCService.PROPERTIES);
+			if (keyValuePairs != null) {
+				for (Object keyValuePair : keyValuePairs) {
+					ComplexContent keyValuePairContent = keyValuePair instanceof ComplexContent ? (ComplexContent) keyValuePair : ComplexContentWrapperFactory.getInstance().getWrapper().wrap(keyValuePair);
+					additional.put((String) keyValuePairContent.get("key"), (String) keyValuePairContent.get("value"));
+				}
+			}
+			
+			Pattern pattern = Pattern.compile("\\$[\\w]+");
+			Matcher matcher = pattern.matcher(preparedSql);
+			ComplexContent firstParameter = parameters != null && parameters.size() > 0 ? parameters.iterator().next() : null;
+			boolean hasNewVariables = false;
+			while (matcher.find()) {
+				String name = matcher.group().substring(1);
+				Object value = firstParameter == null ? null : firstParameter.get(name);
+				if (value == null) {
+					value = additional.get(name);
+				}
+				String replacement = converter.convert(value, String.class);
+				// possible but unlikely to create false positives
+				// worst case scenario we do runtime calculation of parameters instead of cached because of this
+				hasNewVariables |= replacement.contains(":");
+				preparedSql = preparedSql.replaceAll(Pattern.quote(matcher.group()), value == null ? "null" : replacement);
+			}
+			List<String> inputNames = hasNewVariables ? getDefinition().scanForPreparedVariables(preparedSql) : getDefinition().getInputNames();
+			
+			preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect(), preparedSql);
 
 			Integer offset = content == null ? null : (Integer) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
@@ -155,17 +187,6 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 			}
 			
-			// if it's not a batch, check for "$" variables to replace
-			if (!isBatch && parameters != null && parameters.size() > 0) {
-				Pattern pattern = Pattern.compile("\\$[\\w]+");
-				Matcher matcher = pattern.matcher(preparedSql);
-				ComplexContent parameter = parameters.iterator().next();
-				while (matcher.find()) {
-					String name = matcher.group().substring(1);
-					Object value = parameter.get(name);
-					preparedSql = preparedSql.replaceAll(Pattern.quote(matcher.group()), value == null ? "null" : converter.convert(value, String.class));
-				}
-			}
 			if (debug != null) {
 				debug.setSql(preparedSql);
 			}
@@ -180,16 +201,29 @@ public class JDBCServiceInstance implements ServiceInstance {
 					}
 					for (ComplexContent parameter : parameters) {
 						int index = 1;
-						for (String inputName : getDefinition().getInputNames()) {
+						for (String inputName : inputNames) {
 							Element<?> element = parameter.getType().get(inputName);
+							Object value;
 							if (element == null) {
-								throw new ServiceException("JDBC-2", "Can not determine the metadata for the field: " + inputName, inputName);
+								if (additional.containsKey(inputName)) {
+									value = additional.get(inputName);
+									// because we lack metadata, we assume it is always a string
+									// we could try to magically parse it but that could lead to irritating edge cases
+									// we could try to allow you to send objects instead of strings but then we might still need additional metadata about the objects (e.g. date)
+									// so we strictly limit it to strings, in that edge case that you need actual types, you need to convert them in sql
+									element = new SimpleElementImpl<String>(inputName, SimpleTypeWrapperFactory.getInstance().getWrapper().wrap(String.class), null);
+								}
+								else {
+									throw new ServiceException("JDBC-2", "Can not determine the metadata for the field: " + inputName, inputName);
+								}
 							}
 							else if (!(element.getType() instanceof SimpleType)) {
 								throw new ServiceException("JDBC-3", "The field has a non-simple type: " + inputName, inputName);
 							}
+							else {
+								value = parameter.get(inputName);
+							}
 							SimpleType<?> simpleType = (SimpleType<?>) element.getType();
-							Object value = parameter.get(inputName);
 							logger.trace("Setting parameter '{}' = '{}'", inputName, value);
 							// if it's a string, let's check if it has an actual type
 							// if so, convert it first
