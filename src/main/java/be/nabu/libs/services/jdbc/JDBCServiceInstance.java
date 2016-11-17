@@ -194,6 +194,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 			PreparedStatement statement = generatedColumn != null
 				? connection.prepareStatement(preparedSql, new String[] { generatedColumn })
 				: connection.prepareStatement(preparedSql);
+				
+			boolean batchInputAdded = false;
 			try {
 				if (parameters != null) {
 					if (debug != null) {
@@ -344,6 +346,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 						if (isBatch) {
 							statement.addBatch();
+							batchInputAdded = true;
 						}
 					}
 				}
@@ -477,7 +480,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 					}
 					
 					MetricTimer timer = metrics == null ? null : metrics.start(METRIC_EXECUTION_TIME);
-					int[] executeBatch = statement.executeBatch();
+					int[] executeBatch = batchInputAdded ? statement.executeBatch() : new int[] { statement.executeUpdate() };
 					int total = 0;
 					for (int amount : executeBatch) {
 						total += amount;
