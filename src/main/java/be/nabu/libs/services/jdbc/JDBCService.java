@@ -15,6 +15,7 @@ import be.nabu.libs.services.api.DefinedService;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.ServiceInterface;
 import be.nabu.libs.services.jdbc.api.ChangeTracker;
+import be.nabu.libs.services.jdbc.api.DynamicDataSourceResolver;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
 import be.nabu.libs.types.api.ComplexType;
@@ -46,6 +47,7 @@ public class JDBCService implements DefinedService {
 	private List<String> inputNames;
 	private boolean isInputGenerated = true, isOutputGenerated = true;
 	private Boolean validateInput, validateOutput;
+	private DynamicDataSourceResolver dataSourceResolver;
 	
 	/**
 	 * We currently do not support multiple columns but we could if we dynamically generate new documents containing the lists instead of just a list of long
@@ -408,6 +410,14 @@ public class JDBCService implements DefinedService {
 
 	public void setChangeTracker(ChangeTracker changeTracker) {
 		this.changeTracker = changeTracker;
+	}
+
+	public DynamicDataSourceResolver getDataSourceResolver() {
+		return dataSourceResolver;
+	}
+
+	public void setDataSourceResolver(DynamicDataSourceResolver dataSourceResolver) {
+		this.dataSourceResolver = dataSourceResolver;
 	}
 
 }

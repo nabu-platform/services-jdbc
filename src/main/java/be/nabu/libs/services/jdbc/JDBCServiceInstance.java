@@ -98,6 +98,10 @@ public class JDBCServiceInstance implements ServiceInstance {
 		if (connectionId == null) {
 			connectionId = getDefinition().getConnectionId();
 		}
+		// do a lookup for providers that are within the same root folder (= application) as the root service
+		if (connectionId == null && definition.getDataSourceResolver() != null) {
+			connectionId = definition.getDataSourceResolver().getDataSourceId(definition.getId());
+		}
 		if (connectionId == null) {
 			throw new ServiceException("JDBC-0", "No JDBC pool configured");
 		}
