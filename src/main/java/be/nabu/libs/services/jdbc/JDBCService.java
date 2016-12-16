@@ -27,6 +27,7 @@ import be.nabu.libs.types.base.ComplexElementImpl;
 import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.java.BeanResolver;
+import be.nabu.libs.types.properties.CommentProperty;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
 import be.nabu.libs.types.structure.DefinedStructure;
@@ -62,6 +63,7 @@ public class JDBCService implements DefinedService {
 	public static final String OFFSET = "offset";
 	public static final String LIMIT = "limit";
 	public static final String TRACK_CHANGES = "trackChanges";
+	public static final String LAZY = "lazy";
 	public static final String GENERATED_KEYS = "generatedKeys";
 	public static final String ROW_COUNT = "rowCount";
 	
@@ -71,7 +73,7 @@ public class JDBCService implements DefinedService {
 	
 	private String id;
 
-	private Map<SQLDialect, String> preparedSql = new HashMap<SQLDialect, String>();
+	private Map<SQLDialect, Map<String, String>> preparedSql = new HashMap<SQLDialect, Map<String, String>>();
 	
 	public JDBCService(String id) {
 		this.id = id;
@@ -92,6 +94,9 @@ public class JDBCService implements DefinedService {
 			input.add(new SimpleElementImpl<Integer>(OFFSET, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 			input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+			input.add(new SimpleElementImpl<Boolean>(LAZY, wrapper.wrap(Boolean.class), input, 
+					new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), 
+					new ValueImpl<String>(CommentProperty.getInstance(), "When performing a select, the return value can be a lazy list based around a resultset.")));
 			input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 			// allow a list of properties
 			input.add(new ComplexElementImpl(PROPERTIES, (ComplexType) BeanResolver.getInstance().resolve(KeyValuePair.class), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
@@ -147,25 +152,18 @@ public class JDBCService implements DefinedService {
 		if (!preparedSql.containsKey(dialect)) {
 			synchronized(preparedSql) {
 				if (!preparedSql.containsKey(dialect)) {
-					preparedSql.put(dialect, (dialect == null ? sql : dialect.rewrite(sql, getParameters(), getResults())).replaceAll("(?<!:):[\\w]+", "?"));
+					preparedSql.put(dialect, new HashMap<String, String>());
 				}
 			}
 		}
-		return preparedSql.get(dialect);
-	}
-	
-	String getPreparedSql(SQLDialect dialect) {
-		if (sql == null) {
-			throw new RuntimeException("No SQL found for in service: " + getId());
-		}
-		if (!preparedSql.containsKey(dialect)) {
-			synchronized(preparedSql) {
-				if (!preparedSql.containsKey(dialect)) {
-					preparedSql.put(dialect, (dialect == null ? sql : dialect.rewrite(sql, getParameters(), getResults())).replaceAll("(?<!:):[\\w]+", "?"));
+		if (!preparedSql.get(dialect).containsKey(sql)) {
+			synchronized(preparedSql.get(dialect)) {
+				if (!preparedSql.get(dialect).containsKey(sql)) {
+					preparedSql.get(dialect).put(sql, dialect == null ? sql : dialect.rewrite(sql, getParameters(), getResults()).replaceAll("(?<!:):[\\w]+", "?"));
 				}
 			}
 		}
-		return preparedSql.get(dialect);
+		return preparedSql.get(dialect).get(sql);
 	}
 	
 	/**

@@ -5,16 +5,13 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.sql.Types;
+import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.Collection;
-import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -28,6 +25,7 @@ import be.nabu.libs.metrics.api.MetricTimer;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.ServiceRuntime;
+import be.nabu.libs.services.TransactionCloseable;
 import be.nabu.libs.services.api.ExecutionContext;
 import be.nabu.libs.services.api.ServiceException;
 import be.nabu.libs.services.api.ServiceInstance;
@@ -45,16 +43,12 @@ import be.nabu.libs.types.api.ComplexContent;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
-import be.nabu.libs.types.api.Unmarshallable;
 import be.nabu.libs.types.base.SimpleElementImpl;
-import be.nabu.libs.types.properties.ActualTypeProperty;
 import be.nabu.libs.types.properties.AggregateProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
-import be.nabu.libs.types.properties.FormatProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
-import be.nabu.libs.types.properties.TimezoneProperty;
-import be.nabu.libs.types.utils.DateUtils;
-import be.nabu.libs.types.utils.DateUtils.Granularity;
+import be.nabu.libs.types.resultset.ResultSetCollectionHandler;
+import be.nabu.libs.types.resultset.ResultSetWithType;
 import be.nabu.libs.validator.api.Validation;
 import be.nabu.libs.validator.api.ValidationMessage.Severity;
 import be.nabu.libs.validator.api.Validator;
@@ -68,6 +62,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 
 	public static final String METRIC_EXECUTION_TIME = "sqlExecutionTime";
 	public static final String METRIC_MAP_TIME = "resultsMapTime";
+	public static final Integer PREPARED_STATEMENT_ARRAY_SIZE = Integer.parseInt(System.getProperty("be.nabu.libs.services.jdbc.preparedStatementArraySize", "10"));
 	
 	private JDBCService definition;
 	private Converter converter = ConverterFactory.getInstance().getConverter();
@@ -92,6 +87,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 		MetricInstance metrics = executionContext.getMetricInstance(definition.getId());
 		
 		boolean trackChanges = content == null || content.get(JDBCService.TRACK_CHANGES) == null || (Boolean) content.get(JDBCService.TRACK_CHANGES);
+		boolean lazy = content != null && content.get(JDBCService.LAZY) != null && (Boolean) content.get(JDBCService.LAZY);
+		
 		JDBCDebugInformation debug = executionContext.isDebug() ? new JDBCDebugInformation() : null;
 		// get the connection id, you can override this at runtime
 		String connectionId = content == null ? null : (String) content.get(JDBCService.CONNECTION);
@@ -175,8 +172,55 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			List<String> inputNames = hasNewVariables ? getDefinition().scanForPreparedVariables(preparedSql) : getDefinition().getInputNames();
 			
+			SQLDialect dialect = dataSourceProvider.getDialect();
+			if (dialect == null) {
+				dialect = new DefaultDialect();
+			}
+			
+			// if the dialect does not support arrays, rewrite the statement if necessary
+			for (String inputName : inputNames) {
+				Element<?> element = type.get(inputName);
+				if (!dialect.hasArraySupport(element)) {
+					if (element != null && element.getType().isList(element.getProperties())) {
+						// we need to find the largest collection in the input
+						int maxSize = 0;
+						if (parameters != null) {
+							for (ComplexContent parameter : parameters) {
+								Object value = parameter.get(element.getName());
+								if (value != null) {
+									CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
+									if (handler == null) {
+										throw new IllegalArgumentException("Could not find handler for '" + element.getName() + "' of type: " + value.getClass());
+									}
+									Collection asCollection = handler.getAsCollection(value);
+									if (asCollection.size() > maxSize) {
+										maxSize = asCollection.size();
+									}
+								}
+							}
+						}
+						if (maxSize > 0) {
+							StringBuilder builder = new StringBuilder();
+							for (int i = 0; i < maxSize; i++) {
+//								newNames.add(inputName + "[" + i + "]");
+								if (i > 0) {
+									builder.append(", ");
+								}
+								// don't append the index because the rewritten statements are cached on a string basis, this would unnecessarily enlarge that cache
+								builder.append(":").append(inputName);
+							}
+							// repeat the last element a few times to get fewer "different" prepared statements
+							// prepared statements are partly nice because they are cached, generating too many different ones however will oust the old ones from the cache
+							for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+								builder.append(", :").append(inputName);
+							}
+							preparedSql = preparedSql.replace(":" + inputName, builder.toString());
+						}
+					}
+				}
+			}
+			
 			preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect(), preparedSql);
-
 			Integer offset = content == null ? null : (Integer) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
 			boolean nativeLimit = false;
@@ -195,10 +239,23 @@ public class JDBCServiceInstance implements ServiceInstance {
 				debug.setSql(preparedSql);
 			}
 			String generatedColumn = definition.getGeneratedColumn();
-			PreparedStatement statement = generatedColumn != null
-				? connection.prepareStatement(preparedSql, new String[] { generatedColumn })
-				: connection.prepareStatement(preparedSql);
-				
+			PreparedStatement statement;
+			if (generatedColumn != null) {
+				statement = connection.prepareStatement(preparedSql, new String[] { generatedColumn });
+			}
+			else if (lazy) {
+				try {
+					statement = connection.prepareStatement(preparedSql, ResultSet.TYPE_SCROLL_INSENSITIVE, ResultSet.CONCUR_READ_ONLY);
+				}
+				catch (SQLFeatureNotSupportedException e) {
+					logger.warn("The jdbc driver does not support scroll insensitive result sets, using forward only");
+					statement = connection.prepareStatement(preparedSql);
+				}
+			}
+			else {
+				statement = connection.prepareStatement(preparedSql);
+			}
+			
 			boolean batchInputAdded = false;
 			try {
 				if (parameters != null) {
@@ -229,123 +286,21 @@ public class JDBCServiceInstance implements ServiceInstance {
 							else {
 								value = parameter.get(inputName);
 							}
-							SimpleType<?> simpleType = (SimpleType<?>) element.getType();
-							logger.trace("Setting parameter '{}' = '{}'", inputName, value);
-							// if it's a string, let's check if it has an actual type
-							// if so, convert it first
-							if (String.class.isAssignableFrom(simpleType.getInstanceClass())) {
-								SimpleType<?> actualType = ValueUtils.getValue(ActualTypeProperty.getInstance(), element.getProperties());
-								if (actualType != null) {
-									simpleType = actualType;
-									if (actualType instanceof Unmarshallable && value instanceof String) {
-										value = ((Unmarshallable<?>) actualType).unmarshal((String) value, element.getProperties());
-									}
+							if (!dialect.hasArraySupport(element) && value != null && element.getType().isList(element.getProperties())) {
+								CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
+								int amount = 0;
+								Object last = null;
+								for (Object single : handler.getAsIterable(value)) {
+									dialect.setObject(statement, element, index++, single);
+									amount++;
+									last = single;
 								}
-							}
-							// TODO: dates can NOT be set as a list because in the current solution we use setObject() and an array, however in this case it is impossible to actually set a calendar! As a workaround format to string if needed
-							// if it's a date, check the parameters for timezone etc
-							if (Date.class.isAssignableFrom(simpleType.getInstanceClass())) {
-								String format = ValueUtils.getValue(FormatProperty.getInstance(), element.getProperties());
-								Granularity granularity = format == null ? Granularity.TIMESTAMP : DateUtils.getGranularity(format);
-								TimeZone timezone = ValueUtils.getValue(TimezoneProperty.getInstance(), element.getProperties());
-								Calendar calendar = Calendar.getInstance(timezone);
-								switch(granularity) {
-									case DATE:
-										if (value == null) {
-											statement.setNull(index++, Types.DATE);
-										}
-										else {
-											statement.setDate(index++, new java.sql.Date(((Date) value).getTime()), calendar);
-										}
-									break;
-									case TIME:
-										if (value == null) {
-											statement.setNull(index++, Types.TIME);	
-										}
-										else {
-											statement.setTime(index++, new java.sql.Time(((Date) value).getTime()), calendar);
-										}
-									break;
-									case TIMESTAMP:
-										if (value == null) {
-											statement.setNull(index++, Types.TIMESTAMP);
-										}
-										else {
-											statement.setTimestamp(index++, new java.sql.Timestamp(((Date) value).getTime()), calendar);
-										}
-									break;
-									default:
-										throw new ServiceException("JDBC-4", "Unknown date granularity: " + granularity, granularity);
+								for (int i = amount; i < PREPARED_STATEMENT_ARRAY_SIZE - (amount % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+									dialect.setObject(statement, element, index++, last);
 								}
 							}
 							else {
-								SQLDialect dialect = dataSourceProvider.getDialect();
-								if (dialect == null) {
-									dialect = new DefaultDialect();
-								}
-								// check if there is some known conversion logic
-								// anything else is given straight to the JDBC adapter in the hopes that it can handle the type
-								if (value != null) {
-									boolean isList = element.getType().isList(element.getProperties());
-									// IMPORTANT: this bit of code assumes the database supports the setting of an object array instead of a single value
-									// some databases support this, some don't so it depends on the database and more specifically its driver
-									if (isList) {
-										String sqlTypeName = dialect.getSQLName(simpleType.getInstanceClass());
-										CollectionHandlerProvider provider = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
-										if (provider == null) {
-											throw new RuntimeException("Unknown collection type: " + value.getClass());
-										}
-										Collection collection = provider.getAsCollection(value);
-										// most databases that do support object arrays don't support untyped object arrays, so if we can't deduce the sql type, this will very likely fail
-										if (sqlTypeName == null) {
-											logger.warn("Could not map instance class to native SQL type: {}", simpleType.getInstanceClass());
-											if (collection.isEmpty()) {
-												statement.setObject(index++, null);		
-											}
-											else {
-												statement.setObject(index++, collection.toArray());
-											}
-										}
-										else {
-											if (collection.isEmpty()) {
-												statement.setNull(index++, dialect.getSQLType(simpleType.getInstanceClass()), sqlTypeName);
-											}
-											else {
-												// we can either create an array that is specific to the database
-												// note: even using this construct you can not do "where a in (?)" but instead need to do "where a = any(?)" (at least for postgresql)
-												java.sql.Array array = connection.createArrayOf(sqlTypeName, collection.toArray());
-												statement.setObject(index++, array, Types.ARRAY);
-												
-												// or simply pass an object array and hope it works...
-												// note: this does NOT work on postgresql
-	//											Object first = collection.iterator().next();
-	//											Object newInstance = Array.newInstance(first.getClass(), collection.size());
-	//											statement.setObject(index++, collection.toArray((Object[]) newInstance), sqlType);
-											}
-										}
-									}
-									else {
-										Class<?> targetType = dialect.getTargetClass(value.getClass());
-										if (!targetType.equals(value.getClass())) {
-											value = converter.convert(value, targetType);
-											if (value == null) {
-												throw new RuntimeException("Could not convert the value to: " + targetType);
-											}
-										}
-										statement.setObject(index++, value);
-									}
-								}
-								else {
-									Integer sqlType = dialect.getSQLType(simpleType.getInstanceClass());
-									// could not perform a mapping, just pass it to the driver and hope it can figure it out
-									if (sqlType == null) {
-										logger.warn("Could not map instance class to native SQL type: {}", simpleType.getInstanceClass());
-										statement.setObject(index++, null);	
-									}
-									else {
-										statement.setNull(index++, sqlType);
-									}
-								}
+								dialect.setObject(statement, element, index++, value);
 							}
 						}
 						if (isBatch) {
@@ -354,8 +309,25 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 					}
 				}
-				else if (type.iterator().hasNext()) {
-					throw new IllegalArgumentException("Missing input parameters");
+				// if there are input names but you did not provide anything, add nulls for everything
+				else if (!inputNames.isEmpty()) {
+					int index = 1;
+					for (String inputName : inputNames) {
+						Element<?> element = type.get(inputName);
+						Integer sqlType = dialect.getSQLType(element);
+						// could not perform a mapping, just pass it to the driver and hope it can figure it out
+						if (sqlType == null) {
+							logger.warn("Could not map instance class to native SQL type: {}", element.getName());
+							statement.setObject(index++, null);	
+						}
+						else {
+							statement.setNull(index++, sqlType);
+						}
+					}
+					if (isBatch) {
+						statement.addBatch();
+						batchInputAdded = true;
+					}
 				}
 	
 				ComplexContent output = getDefinition().getOutput().newInstance();
@@ -574,54 +546,49 @@ public class JDBCServiceInstance implements ServiceInstance {
 					if (debug != null) {
 						debug.setExecutionDuration(executionTime);
 					}
-					timer = metrics == null ? null : metrics.start(METRIC_MAP_TIME);
-					int recordCounter = 0;
-					int index = 0;
-					while (executeQuery.next()) {
-						// if we don't have a native (dialect) limit but we did set an offset, do it programmatically
-						if (!nativeLimit && offset != null) {
-							recordCounter++;
-							if (recordCounter < offset) {
-								continue;
-							}
+					if (lazy) {
+						if (!executeQuery.next()) {
+							executeQuery.close();
+							output.set(JDBCService.ROW_COUNT, 0);
 						}
-						ComplexContent result = resultType.newInstance();
-						int column = 1;
-						for (Element<?> child : TypeUtils.getAllChildren(resultType)) {
-							SimpleType<?> simpleType = (SimpleType<?>) child.getType();
-							Object value;
-							if (Date.class.isAssignableFrom(simpleType.getInstanceClass())) {
-								String format = ValueUtils.getValue(FormatProperty.getInstance(), child.getProperties());
-								Granularity granularity = format == null ? Granularity.TIMESTAMP : DateUtils.getGranularity(format);
-								TimeZone timezone = ValueUtils.getValue(TimezoneProperty.getInstance(), child.getProperties());
-								Calendar calendar = Calendar.getInstance(timezone);
-								switch(granularity) {
-									case DATE:
-										value = executeQuery.getDate(column++, calendar);
-									break;
-									case TIME:
-										value = executeQuery.getTime(column++, calendar);
-									break;
-									case TIMESTAMP:
-										value = executeQuery.getTimestamp(column++, calendar);
-									break;
-									default:
-										throw new ServiceException("JDBC-4", "Unknown date granularity: " + granularity, granularity);
-								}
-							}
-							else {
-								value = executeQuery.getObject(column++);
-							}
-							// conversion should be handled by the result instance
-							result.set(child.getName(), value);
+						else {
+							output.set(JDBCService.RESULTS, new ResultSetWithType(executeQuery, resultType, true));
+							// the size is unknown
+							output.set(JDBCService.ROW_COUNT, -1);
 						}
-						output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
 					}
-					output.set(JDBCService.ROW_COUNT, index);
-					Long mappingTime = timer == null ? null : timer.stop();
-					if (debug != null) {
-						debug.setMappingDuration(mappingTime);
-						debug.setOutputAmount(index);
+					else {
+						timer = metrics == null ? null : metrics.start(METRIC_MAP_TIME);
+						int recordCounter = 0;
+						int index = 0;
+						try {
+							while (executeQuery.next()) {
+								// if we don't have a native (dialect) limit but we did set an offset, do it programmatically
+								if (!nativeLimit && offset != null) {
+									recordCounter++;
+									if (recordCounter < offset) {
+										continue;
+									}
+								}
+								ComplexContent result;
+								try {
+									result = ResultSetCollectionHandler.convert(executeQuery, resultType);
+								}
+								catch (IllegalArgumentException e) {
+									throw new ServiceException("JDBC-4", "Invalid type", e);
+								}
+								output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
+							}
+						}
+						finally {
+							executeQuery.close();
+						}
+						output.set(JDBCService.ROW_COUNT, index);
+						Long mappingTime = timer == null ? null : timer.stop();
+						if (debug != null) {
+							debug.setMappingDuration(mappingTime);
+							debug.setOutputAmount(index);
+						}
 					}
 				}
 				
@@ -645,7 +612,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 				return output;
 			}
 			finally {
-				statement.close();
+				if (lazy) {
+					executionContext.getTransactionContext().add(transactionId, new TransactionCloseable(statement));
+				}
+				else {
+					statement.close();
+				}
 			}
 		}	
 		catch (SQLException e) {
