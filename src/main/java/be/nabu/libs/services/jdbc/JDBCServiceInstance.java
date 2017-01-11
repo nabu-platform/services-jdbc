@@ -180,42 +180,40 @@ public class JDBCServiceInstance implements ServiceInstance {
 			// if the dialect does not support arrays, rewrite the statement if necessary
 			for (String inputName : inputNames) {
 				Element<?> element = type.get(inputName);
-				if (!dialect.hasArraySupport(element)) {
-					if (element != null && element.getType().isList(element.getProperties())) {
-						// we need to find the largest collection in the input
-						int maxSize = 0;
-						if (parameters != null) {
-							for (ComplexContent parameter : parameters) {
-								Object value = parameter.get(element.getName());
-								if (value != null) {
-									CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
-									if (handler == null) {
-										throw new IllegalArgumentException("Could not find handler for '" + element.getName() + "' of type: " + value.getClass());
-									}
-									Collection asCollection = handler.getAsCollection(value);
-									if (asCollection.size() > maxSize) {
-										maxSize = asCollection.size();
-									}
+				if (element != null && !dialect.hasArraySupport(element) && element.getType().isList(element.getProperties())) {
+					// we need to find the largest collection in the input
+					int maxSize = 0;
+					if (parameters != null) {
+						for (ComplexContent parameter : parameters) {
+							Object value = parameter.get(element.getName());
+							if (value != null) {
+								CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
+								if (handler == null) {
+									throw new IllegalArgumentException("Could not find handler for '" + element.getName() + "' of type: " + value.getClass());
+								}
+								Collection asCollection = handler.getAsCollection(value);
+								if (asCollection.size() > maxSize) {
+									maxSize = asCollection.size();
 								}
 							}
 						}
-						if (maxSize > 0) {
-							StringBuilder builder = new StringBuilder();
-							for (int i = 0; i < maxSize; i++) {
+					}
+					if (maxSize > 0) {
+						StringBuilder builder = new StringBuilder();
+						for (int i = 0; i < maxSize; i++) {
 //								newNames.add(inputName + "[" + i + "]");
-								if (i > 0) {
-									builder.append(", ");
-								}
-								// don't append the index because the rewritten statements are cached on a string basis, this would unnecessarily enlarge that cache
-								builder.append(":").append(inputName);
+							if (i > 0) {
+								builder.append(", ");
 							}
-							// repeat the last element a few times to get fewer "different" prepared statements
-							// prepared statements are partly nice because they are cached, generating too many different ones however will oust the old ones from the cache
-							for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
-								builder.append(", :").append(inputName);
-							}
-							preparedSql = preparedSql.replace(":" + inputName, builder.toString());
+							// don't append the index because the rewritten statements are cached on a string basis, this would unnecessarily enlarge that cache
+							builder.append(":").append(inputName);
 						}
+						// repeat the last element a few times to get fewer "different" prepared statements
+						// prepared statements are partly nice because they are cached, generating too many different ones however will oust the old ones from the cache
+						for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+							builder.append(", :").append(inputName);
+						}
+						preparedSql = preparedSql.replace(":" + inputName, builder.toString());
 					}
 				}
 			}
