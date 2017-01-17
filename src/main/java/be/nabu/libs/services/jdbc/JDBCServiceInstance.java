@@ -213,7 +213,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
 							builder.append(", :").append(inputName);
 						}
-						preparedSql = preparedSql.replace(":" + inputName, builder.toString());
+						preparedSql = preparedSql.replaceAll(":" + inputName + "\\b", builder.toString());
 					}
 				}
 			}
