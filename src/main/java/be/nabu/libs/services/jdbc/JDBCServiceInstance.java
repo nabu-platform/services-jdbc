@@ -164,11 +164,13 @@ public class JDBCServiceInstance implements ServiceInstance {
 				if (value == null) {
 					value = additional.get(name);
 				}
-				String replacement = converter.convert(value, String.class);
+				String replacement = value == null ? null : converter.convert(value, String.class);
 				// possible but unlikely to create false positives
 				// worst case scenario we do runtime calculation of parameters instead of cached because of this
-				hasNewVariables |= replacement.contains(":");
-				preparedSql = preparedSql.replaceAll(Pattern.quote(matcher.group()), value == null ? "null" : replacement);
+				if (replacement != null) {
+					hasNewVariables |= replacement.contains(":");
+				}
+				preparedSql = preparedSql.replaceAll(Pattern.quote(matcher.group()), replacement == null ? "" : replacement);
 			}
 			List<String> inputNames = hasNewVariables ? getDefinition().scanForPreparedVariables(preparedSql) : getDefinition().getInputNames();
 			
@@ -344,6 +346,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 						Element<?> aggregateKey = null;
 						for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
 							Value<String> aggregate = element.getProperty(AggregateProperty.getInstance());
+							if (tableName == null && aggregate != null && definition.isInputGenerated()) {
+								Value<String> property = element.getProperty(CollectionNameProperty.getInstance());
+								if (property != null) {
+									tableName = property.getValue();
+								}
+							}
 							if (aggregate != null && aggregate.equals("composite")) {
 								aggregateKey = element;
 								break;
@@ -395,6 +403,14 @@ public class JDBCServiceInstance implements ServiceInstance {
 						for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
 							Value<Boolean> property = element.getProperty(PrimaryKeyProperty.getInstance());
 							if (property != null && property.getValue()) {
+								// if the input is generated and we set a collection name on the primary key, we assume it is for the table
+								// for generated inputs, we can't set properties on the root
+								if (definition.isInputGenerated()) {
+									Value<String> collectionProperty = element.getProperty(CollectionNameProperty.getInstance());
+									if (collectionProperty != null) {
+										tableName = collectionProperty.getValue();
+									}
+								}
 								primaryKey = element;
 								break;
 							}
