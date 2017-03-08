@@ -387,14 +387,19 @@ public class JDBCServiceInstance implements ServiceInstance {
 							String aggregateKeyName = uncamelify(aggregateKey.getName());
 							for (Object key : counts.keySet()) {
 								PreparedStatement countStatement = connection.prepareStatement("select count(*) from " + tableName + " where " + aggregateKeyName + " = ?");
-								countStatement.setObject(1, key);
-								ResultSet executeQuery = countStatement.executeQuery();
-								if (!executeQuery.next()) {
-									throw new ServiceException("JDBC-15", "Can not determine amount of elements in '" + tableName + "' for field " + aggregateKeyName + " = " + key);
+								try {
+									countStatement.setObject(1, key);
+									ResultSet executeQuery = countStatement.executeQuery();
+									if (!executeQuery.next()) {
+										throw new ServiceException("JDBC-15", "Can not determine amount of elements in '" + tableName + "' for field " + aggregateKeyName + " = " + key);
+									}
+									long number = executeQuery.getLong(1);
+									if (counts.get(key) + number > limit) {
+										throw new ServiceException("JDBC-16", "Too many elements for table '" + tableName + "' field '" + aggregateKeyName + "' value '" + key + "', currently " + number + " in database and " + counts.get(key) + " would be added (> " + limit + ")");
+									}
 								}
-								long number = executeQuery.getLong(1);
-								if (counts.get(key) + number > limit) {
-									throw new ServiceException("JDBC-16", "Too many elements for table '" + tableName + "' field '" + aggregateKeyName + "' value '" + key + "', currently " + number + " in database and " + counts.get(key) + " would be added (> " + limit + ")");
+								finally {
+									countStatement.close();
 								}
 							}
 						}
@@ -451,21 +456,26 @@ public class JDBCServiceInstance implements ServiceInstance {
 						// if it is an insert statement, they should all be new, otherwise select them so we can track the changes
 						if (!preparedSql.trim().toLowerCase().startsWith("insert")) {
 							PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
-							for (int i = 0; i < primaryKeys.size(); i++) {
-								selectAll.setObject(i + 1, primaryKeys.get(i));
-							}
-							ResultSet executeQuery = selectAll.executeQuery();
-							original = new HashMap<Object, Map<String, Object>>();
-							ResultSetMetaData metaData = executeQuery.getMetaData();
-							int columnCount = metaData.getColumnCount();
-							while (executeQuery.next()) {
-								Map<String, Object> current = new HashMap<String, Object>();
-								for (int i = 1; i <= columnCount; i++) {
-									current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+							try {
+								for (int i = 0; i < primaryKeys.size(); i++) {
+									selectAll.setObject(i + 1, primaryKeys.get(i));
 								}
-								original.put(current.get(primaryKeyName), current);
+								ResultSet executeQuery = selectAll.executeQuery();
+								original = new HashMap<Object, Map<String, Object>>();
+								ResultSetMetaData metaData = executeQuery.getMetaData();
+								int columnCount = metaData.getColumnCount();
+								while (executeQuery.next()) {
+									Map<String, Object> current = new HashMap<String, Object>();
+									for (int i = 1; i <= columnCount; i++) {
+										current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+									}
+									original.put(current.get(primaryKeyName), current);
+								}
+								missing.removeAll(original.keySet());
 							}
-							missing.removeAll(original.keySet());
+							finally {
+								selectAll.close();
+							}
 						}
 					}
 					
@@ -484,67 +494,72 @@ public class JDBCServiceInstance implements ServiceInstance {
 					
 					if (definition.getChangeTracker() != null && trackChanges) {
 						PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
-						for (int i = 0; i < primaryKeys.size(); i++) {
-							selectAll.setObject(i + 1, primaryKeys.get(i));
-						}
-						ResultSet executeQuery = selectAll.executeQuery();
-						Map<Object, Map<String, Object>> updated = new HashMap<Object, Map<String, Object>>();
-						ResultSetMetaData metaData = executeQuery.getMetaData();
-						int columnCount = metaData.getColumnCount();
-						while (executeQuery.next()) {
-							Map<String, Object> current = new HashMap<String, Object>();
-							for (int i = 1; i <= columnCount; i++) {
-								current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+						try {
+							for (int i = 0; i < primaryKeys.size(); i++) {
+								selectAll.setObject(i + 1, primaryKeys.get(i));
 							}
-							updated.put(current.get(primaryKeyName), current);
-						}
-						List<Object> newMissing = new ArrayList<Object>(primaryKeys);
-						newMissing.removeAll(updated.keySet());
-						// don't take into account the ones that were already missing
-						newMissing.removeAll(missing);
-
-						List<ChangeSet> changesets = new ArrayList<ChangeSet>();
-						
-						// first the deleted
-						for (Object key : newMissing) {
-							changesets.add(new ChangeSetImpl(key, ChangeType.DELETE, original.get(key), null));
-						}
-						
-						// the newly created
-						for (Object key : missing) {
-							if (updated.containsKey(key)) {
-								Map<String, Object> initial = updated.get(key);
-								Iterator<String> iterator = initial.keySet().iterator();
-								// remove the empty ones
-								while (iterator.hasNext()) {
-									if (initial.get(iterator.next()) == null) {
-										iterator.remove();
+							ResultSet executeQuery = selectAll.executeQuery();
+							Map<Object, Map<String, Object>> updated = new HashMap<Object, Map<String, Object>>();
+							ResultSetMetaData metaData = executeQuery.getMetaData();
+							int columnCount = metaData.getColumnCount();
+							while (executeQuery.next()) {
+								Map<String, Object> current = new HashMap<String, Object>();
+								for (int i = 1; i <= columnCount; i++) {
+									current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+								}
+								updated.put(current.get(primaryKeyName), current);
+							}
+							List<Object> newMissing = new ArrayList<Object>(primaryKeys);
+							newMissing.removeAll(updated.keySet());
+							// don't take into account the ones that were already missing
+							newMissing.removeAll(missing);
+	
+							List<ChangeSet> changesets = new ArrayList<ChangeSet>();
+							
+							// first the deleted
+							for (Object key : newMissing) {
+								changesets.add(new ChangeSetImpl(key, ChangeType.DELETE, original.get(key), null));
+							}
+							
+							// the newly created
+							for (Object key : missing) {
+								if (updated.containsKey(key)) {
+									Map<String, Object> initial = updated.get(key);
+									Iterator<String> iterator = initial.keySet().iterator();
+									// remove the empty ones
+									while (iterator.hasNext()) {
+										if (initial.get(iterator.next()) == null) {
+											iterator.remove();
+										}
+									}
+									changesets.add(new ChangeSetImpl(key, ChangeType.INSERT, null, updated.get(key)));
+									updated.remove(key);
+								}
+							}
+	
+							// compare the old for updates
+							for (Object key : updated.keySet()) {
+								Map<String, Object> current = updated.get(key);
+								Map<String, Object> old = original.get(key);
+								for (String name : old.keySet()) {
+									Object currentValue = current.get(name);
+									Object oldValue = old.get(name);
+									// if it is unchanged, remove it from the new mapping
+									if (currentValue == null && oldValue == null || currentValue != null && currentValue.equals(oldValue)) {
+										current.remove(name);
 									}
 								}
-								changesets.add(new ChangeSetImpl(key, ChangeType.INSERT, null, updated.get(key)));
-								updated.remove(key);
-							}
-						}
-
-						// compare the old for updates
-						for (Object key : updated.keySet()) {
-							Map<String, Object> current = updated.get(key);
-							Map<String, Object> old = original.get(key);
-							for (String name : old.keySet()) {
-								Object currentValue = current.get(name);
-								Object oldValue = old.get(name);
-								// if it is unchanged, remove it from the new mapping
-								if (currentValue == null && oldValue == null || currentValue != null && currentValue.equals(oldValue)) {
-									current.remove(name);
+								// if something was updated, add it to the diff
+								if (!current.isEmpty()) {
+									changesets.add(new ChangeSetImpl(key, ChangeType.UPDATE, old, current));
 								}
 							}
-							// if something was updated, add it to the diff
-							if (!current.isEmpty()) {
-								changesets.add(new ChangeSetImpl(key, ChangeType.UPDATE, old, current));
+							if (!changesets.isEmpty()) {
+								definition.getChangeTracker().track(connectionId, transactionId, tableName, changesets);
 							}
 						}
-						if (!changesets.isEmpty()) {
-							definition.getChangeTracker().track(connectionId, transactionId, tableName, changesets);
+						finally {
+							selectAll.close();
 						}
 					}
 				}
@@ -608,11 +623,16 @@ public class JDBCServiceInstance implements ServiceInstance {
 				
 				if (generatedColumn != null) {
 					ResultSet generatedKeys = statement.getGeneratedKeys();
-					List<Long> generated = new ArrayList<Long>();
-					while (generatedKeys.next()) {
-						generated.add(generatedKeys.getLong(1));
+					try {
+						List<Long> generated = new ArrayList<Long>();
+						while (generatedKeys.next()) {
+							generated.add(generatedKeys.getLong(1));
+						}
+						output.set(JDBCService.GENERATED_KEYS, generated);
 					}
-					output.set(JDBCService.GENERATED_KEYS, generated);
+					finally {
+						generatedKeys.close();
+					}
 				}
 				if (definition.getValidateOutput() != null && definition.getValidateOutput()) {
 					Validator validator = output.getType().createValidator();
