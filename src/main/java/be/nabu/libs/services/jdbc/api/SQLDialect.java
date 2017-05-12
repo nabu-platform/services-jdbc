@@ -207,8 +207,8 @@ public interface SQLDialect {
 		else {
 			// check if there is some known conversion logic
 			// anything else is given straight to the JDBC adapter in the hopes that it can handle the type
+			boolean isList = element.getType().isList(element.getProperties());
 			if (value != null) {
-				boolean isList = element.getType().isList(element.getProperties());
 				// IMPORTANT: this bit of code assumes the database supports the setting of an object array instead of a single value
 				// some databases support this, some don't so it depends on the database and more specifically its driver
 				if (isList && hasArraySupport(element)) {
@@ -235,6 +235,13 @@ public interface SQLDialect {
 				if (sqlType == null) {
 					logger.warn("Could not map instance class to native SQL type: {}", simpleType.getInstanceClass());
 					statement.setObject(index, null);	
+				}
+				else if (isList) {
+					// don't set empty array as you can no longer do "is null"
+//					java.sql.Array array = statement.getConnection().createArrayOf(getSQLName(simpleType.getInstanceClass()), new Object[0]);
+//					statement.setObject(index, array, Types.ARRAY);
+//					statement.setObject(index, null, Types.ARRAY);
+					statement.setNull(index, Types.ARRAY, getSQLName(element));
 				}
 				else {
 					statement.setNull(index, sqlType);

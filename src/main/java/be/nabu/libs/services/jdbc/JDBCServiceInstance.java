@@ -314,15 +314,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 					int index = 1;
 					for (String inputName : inputNames) {
 						Element<?> element = type.get(inputName);
-						Integer sqlType = dialect.getSQLType(element);
-						// could not perform a mapping, just pass it to the driver and hope it can figure it out
-						if (sqlType == null) {
-							logger.warn("Could not map instance class to native SQL type: {}", element.getName());
-							statement.setObject(index++, null);	
-						}
-						else {
-							statement.setNull(index++, sqlType);
-						}
+						dialect.setObject(statement, element, index++, null);
 					}
 					if (isBatch) {
 						statement.addBatch();
