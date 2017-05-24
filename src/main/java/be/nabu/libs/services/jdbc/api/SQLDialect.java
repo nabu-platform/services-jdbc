@@ -236,7 +236,7 @@ public interface SQLDialect {
 					logger.warn("Could not map instance class to native SQL type: {}", simpleType.getInstanceClass());
 					statement.setObject(index, null);	
 				}
-				else if (isList) {
+				else if (isList && hasArraySupport(element)) {
 					// don't set empty array as you can no longer do "is null"
 //					java.sql.Array array = statement.getConnection().createArrayOf(getSQLName(simpleType.getInstanceClass()), new Object[0]);
 //					statement.setObject(index, array, Types.ARRAY);
