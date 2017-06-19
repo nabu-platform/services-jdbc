@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import be.nabu.libs.converter.ConverterFactory;
 import be.nabu.libs.converter.api.Converter;
 import be.nabu.libs.property.ValueUtils;
+import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.api.ServiceException;
 import be.nabu.libs.types.CollectionHandlerFactory;
 import be.nabu.libs.types.api.CollectionHandlerProvider;
@@ -25,7 +26,9 @@ import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
 import be.nabu.libs.types.api.Unmarshallable;
 import be.nabu.libs.types.properties.ActualTypeProperty;
+import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.FormatProperty;
+import be.nabu.libs.types.properties.NameProperty;
 import be.nabu.libs.types.properties.TimezoneProperty;
 import be.nabu.libs.types.utils.DateUtils;
 import be.nabu.libs.types.utils.DateUtils.Granularity;
@@ -48,7 +51,7 @@ public interface SQLDialect {
 	 * Add an offset and a limit to an sql statement using database-specific syntax
 	 * If you return null, it is assumed you can't and application level limiting will be applied
 	 */
-	public String limit(String sql, Integer offset, Integer limit);
+	public String limit(String sql, Long offset, Integer limit);
 	
 	/**
 	 * Build a "create table" sql statement from the given type
@@ -280,5 +283,17 @@ public interface SQLDialect {
 //								statement.setObject(index++, collection.toArray((Object[]) newInstance), sqlType);
 			}
 		}
+	}
+	
+	public default String getTotalCountQuery(String query) {
+		return "select count(a.*) as total from (" + query + ") a";
+	}
+	
+	public static String getName(Value<?>...properties) {
+		String value = ValueUtils.getValue(CollectionNameProperty.getInstance(), properties);
+		if (value == null) {
+			value = ValueUtils.getValue(NameProperty.getInstance(), properties);
+		}
+		return value;
 	}
 }

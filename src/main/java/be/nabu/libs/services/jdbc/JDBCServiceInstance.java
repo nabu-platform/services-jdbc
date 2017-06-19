@@ -112,6 +112,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		if (dataSourceProvider == null) {
 			throw new ServiceException("JDBC-1", "Can not find datasource provider: " + connectionId, connectionId);
 		}
+
 		// if it's not autocommitted, we need to check if there is already a transaction open on this resource for the given transaction id
 		Connection connection = null;
 		try {
@@ -178,7 +179,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			if (dialect == null) {
 				dialect = new DefaultDialect();
 			}
-			
+
 			// if the dialect does not support arrays, rewrite the statement if necessary
 			for (String inputName : inputNames) {
 				Element<?> element = type.get(inputName);
@@ -221,8 +222,19 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			
 			preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect(), preparedSql);
-			Integer offset = content == null ? null : (Integer) content.get(JDBCService.OFFSET);
+			
+			Long offset = content == null ? null : (Long) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
+
+			// make sure we do a total count statement without limits & offsets
+			boolean includeTotalCount = content == null || content.get(JDBCService.INCLUDE_TOTAL_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_TOTAL_COUNT);
+			PreparedStatement totalCountStatement = null;
+			// if we want a total count, check if there is a limit (if not, total count == actual count)
+			// also check that it is not lazy cause we won't know the total count then even if not limited
+			if (includeTotalCount && (limit != null || lazy)) {
+				totalCountStatement = connection.prepareStatement(dialect.getTotalCountQuery(preparedSql));
+			}
+			
 			boolean nativeLimit = false;
 			// the limit is for selects
 			if (!isBatch && (offset != null || limit != null)) {
@@ -291,20 +303,32 @@ public class JDBCServiceInstance implements ServiceInstance {
 								int amount = 0;
 								Object last = null;
 								for (Object single : handler.getAsIterable(value)) {
+									if (totalCountStatement != null) {
+										dialect.setObject(totalCountStatement, element, index, single);
+									}
 									dialect.setObject(statement, element, index++, single);
 									amount++;
 									last = single;
 								}
 								for (int i = amount; i < PREPARED_STATEMENT_ARRAY_SIZE - (amount % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+									if (totalCountStatement != null) {
+										dialect.setObject(totalCountStatement, element, index, last);
+									}
 									dialect.setObject(statement, element, index++, last);
 								}
 							}
 							else {
+								if (totalCountStatement != null) {
+									dialect.setObject(totalCountStatement, element, index, value);
+								}
 								dialect.setObject(statement, element, index++, value);
 							}
 						}
 						if (isBatch) {
 							statement.addBatch();
+							if (totalCountStatement != null) {
+								totalCountStatement.addBatch();
+							}
 							batchInputAdded = true;
 						}
 					}
@@ -314,14 +338,19 @@ public class JDBCServiceInstance implements ServiceInstance {
 					int index = 1;
 					for (String inputName : inputNames) {
 						Element<?> element = type.get(inputName);
+						if (totalCountStatement != null) {
+							dialect.setObject(totalCountStatement, element, index, null);
+						}
 						dialect.setObject(statement, element, index++, null);
 					}
 					if (isBatch) {
+						if (totalCountStatement != null) {
+							totalCountStatement.addBatch();
+						}
 						statement.addBatch();
 						batchInputAdded = true;
 					}
 				}
-	
 				ComplexContent output = getDefinition().getOutput().newInstance();
 				if (isBatch) {
 					Element<?> primaryKey = null;
@@ -560,7 +589,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 					MetricTimer timer = metrics == null ? null : metrics.start(METRIC_EXECUTION_TIME);
 					// if we have an offset/limit but it was not fixed natively through the dialect, do it programmatically
 					if (!nativeLimit && limit != null) {
-						statement.setMaxRows(offset != null ? offset + limit : limit);
+						statement.setMaxRows((int) (offset != null ? offset + limit : limit));
 					}
 					ResultSet executeQuery = statement.executeQuery();
 					Long executionTime = timer == null ? null : timer.stop();
@@ -612,6 +641,18 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 					}
 				}
+				if (totalCountStatement != null) {
+					ResultSet totalCountResultSet = totalCountStatement.executeQuery();
+					if (totalCountResultSet.next()) {
+						output.set(JDBCService.TOTAL_ROW_COUNT, totalCountResultSet.getLong(1));
+					}
+					else {
+						throw new ServiceException("JDBC-17", "No results found for count");
+					}
+				}
+				else if (includeTotalCount) {
+					output.set(JDBCService.TOTAL_ROW_COUNT, output.get(JDBCService.ROW_COUNT));
+				}
 				
 				if (generatedColumn != null) {
 					ResultSet generatedKeys = statement.getGeneratedKeys();
@@ -643,6 +684,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 				else {
 					statement.close();
+				}
+				if (totalCountStatement != null) {
+					totalCountStatement.close();
 				}
 			}
 		}	

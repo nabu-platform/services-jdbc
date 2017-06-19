@@ -62,10 +62,12 @@ public class JDBCService implements DefinedService {
 	public static final String RESULTS = "results";
 	public static final String OFFSET = "offset";
 	public static final String LIMIT = "limit";
+	public static final String INCLUDE_TOTAL_COUNT = "totalRowCount";
 	public static final String TRACK_CHANGES = "trackChanges";
 	public static final String LAZY = "lazy";
 	public static final String GENERATED_KEYS = "generatedKeys";
 	public static final String ROW_COUNT = "rowCount";
+	public static final String TOTAL_ROW_COUNT = "totalRowCount";
 	
 	private ChangeTracker changeTracker;
 	
@@ -93,8 +95,9 @@ public class JDBCService implements DefinedService {
 					input.setName("input");
 					input.add(new SimpleElementImpl<String>(CONNECTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<String>(TRANSACTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					input.add(new SimpleElementImpl<Integer>(OFFSET, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<Long>(OFFSET, wrapper.wrap(Long.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<Boolean>(INCLUDE_TOTAL_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(LAZY, wrapper.wrap(Boolean.class), input, 
 							new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), 
@@ -117,6 +120,7 @@ public class JDBCService implements DefinedService {
 					output.add(new ComplexElementImpl(RESULTS, getResults(), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					output.add(new SimpleElementImpl<Long>(GENERATED_KEYS, wrapper.wrap(Long.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					output.add(new SimpleElementImpl<Long>(ROW_COUNT, wrapper.wrap(Long.class), output));
+					output.add(new SimpleElementImpl<Long>(TOTAL_ROW_COUNT, wrapper.wrap(Long.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					this.output = output;
 				}
 			}
@@ -231,6 +235,9 @@ public class JDBCService implements DefinedService {
 			}
 		}
 		
+		boolean isSelect = sql != null && sql.trim().toLowerCase().startsWith("select");
+		boolean isWith = sql != null && sql.trim().toLowerCase().startsWith("with");
+		
 		if (isOutputGenerated) {
 			Structure results = (Structure) getResults();
 			Map<String, Element<?>> outputElements = new HashMap<String, Element<?>>();
@@ -241,10 +248,37 @@ public class JDBCService implements DefinedService {
 				iterator.remove();
 			}
 			// regenerate output
-			if (sql != null && sql.trim().startsWith("select")) {
-				int index = sql.toLowerCase().indexOf("from");
-				if (index >= 0) {
-					String select = sql.trim().substring("select".length(), index);
+			if (sql != null && (isSelect || isWith)) {
+				int endIndex = -1;
+				int startIndex = -1;
+				if (isWith) {
+					int depth = 0;
+					int offset = 0;
+					// multiple brackets are combined into one part, e.g. ")))"
+					for (String part : sql.trim().split("\\b")) {
+						if (part.contains("(")) {
+							depth += (part.length() - part.replace("(", "").length());
+						}
+						if (part.contains(")")) {
+							depth -= (part.length() - part.replace(")", "").length());
+						}
+						// we must get the index before the from
+						if (endIndex < 0 && depth == 0 && part.matches("(?i).*\\bfrom\\b.*")) {
+							endIndex = offset;
+						}
+						offset += part.length();
+						// and after the select
+						if (startIndex < 0 && depth == 0 && part.matches("(?i).*\\bselect\\b.*")) {
+							startIndex = offset;
+						}
+					}
+				}
+				else {
+					endIndex = sql.trim().toLowerCase().indexOf("from");
+					startIndex = "select".length();
+				}
+				if (startIndex >= 0 && endIndex >= 0) {
+					String select = sql.trim().substring(startIndex, endIndex);
 					for (String part : select.split(",")) {
 						int opening = part.length() - part.replace("(", "").length();
 						int closing = part.length() - part.replace(")", "").length();
@@ -272,7 +306,7 @@ public class JDBCService implements DefinedService {
 		// if it's not a select AND you are using replacement variables, you can also only set one
 		// 		if you use the ":" notation, you reuse the native capabilities of prepared statement which can handle a batch
 		// 		if you use the "$" notation, it is an actual string replace and is performed before the sql is sent to the prepared statement, as such it can not be done in batch!
-		if (sql != null && (sql.matches(".*\\$[\\w]+.*") || sql.toLowerCase().trim().startsWith("select"))) {
+		if (sql != null && (sql.matches(".*\\$[\\w]+.*") || isSelect || isWith)) {
 			// set input parameters to single, can't do a batch of selects
 			getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 1));
 		}

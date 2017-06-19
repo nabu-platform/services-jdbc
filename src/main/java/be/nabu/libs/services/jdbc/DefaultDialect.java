@@ -10,7 +10,7 @@ public class DefaultDialect implements SQLDialect {
 		return sql;
 	}
 	@Override
-	public String limit(String sql, Integer offset, Integer limit) {
+	public String limit(String sql, Long offset, Integer limit) {
 		return sql;
 	}
 	@Override
