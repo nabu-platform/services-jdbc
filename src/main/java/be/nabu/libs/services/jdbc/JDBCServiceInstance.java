@@ -370,16 +370,30 @@ public class JDBCServiceInstance implements ServiceInstance {
 							if (tableName == null && aggregate != null && definition.isInputGenerated()) {
 								Value<String> property = element.getProperty(CollectionNameProperty.getInstance());
 								if (property != null) {
-									tableName = property.getValue();
+									tableName = uncamelify(property.getValue());
 								}
 							}
-							if (aggregate != null && aggregate.equals("composite")) {
-								aggregateKey = element;
-								break;
+							if (definition.isInputGenerated()) {
+								Value<Boolean> primaryKeyProperty = element.getProperty(PrimaryKeyProperty.getInstance());
+								if (primaryKeyProperty != null && primaryKeyProperty.getValue()) {
+									// if the input is generated and we set a collection name on the primary key, we assume it is for the table
+									// for generated inputs, we can't set properties on the root
+									Value<String> collectionProperty = element.getProperty(CollectionNameProperty.getInstance());
+									if (collectionProperty != null) {
+										tableName = uncamelify(collectionProperty.getValue());
+									}
+								}
+								primaryKey = element;
+							}
+							// composite is stronger where the part can not exist without the whole
+							// with aggregation both can exist separately but if you are limiting it explicitly, we can still check the amount
+							if (aggregate != null && (aggregate.getValue().equals("composite") || aggregate.getValue().equals("aggregate"))) {
+								// if we already have an aggregate key, only overwrite it if we have a composite relation (is stricter)
+								aggregateKey = aggregateKey == null || aggregate.equals("composite") ? element : aggregateKey;
 							}
 						}
 						if (aggregateKey == null) {
-							throw new ServiceException("JDBC-12", "Can only limit inserts if a composite aggregate is found");
+							throw new ServiceException("JDBC-12", "Can only limit inserts if a composite or aggregate aggregation is found");
 						}
 						if (tableName == null) {
 							int position = getDefinition().getInputNames().indexOf(aggregateKey.getName());
@@ -391,6 +405,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						if (tableName == null) {
 							throw new ServiceException("JDBC-14", "Can not determine the table name for the limiting");
 						}
+						String aggregateKeyName = uncamelify(aggregateKey.getName());
 						Map<Object, Integer> counts = new HashMap<Object, Integer>();
 						for (ComplexContent parameter : parameters) {
 							Object key = parameter.get(aggregateKey.getName());
@@ -402,10 +417,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 								else {
 									counts.put(key, counts.get(key) + 1);
 								}
+								if (counts.get(key) > limit) {
+									throw new ServiceException("JDBC-16", "Too many elements for table '" + tableName + "' field '" + aggregateKeyName + "' value '" + key + "', " + counts.get(key) + " would be added (> " + limit + ")");
+								}
 							}
 						}
 						if (!counts.isEmpty()) {
-							String aggregateKeyName = uncamelify(aggregateKey.getName());
 							for (Object key : counts.keySet()) {
 								PreparedStatement countStatement = connection.prepareStatement("select count(*) from " + tableName + " where " + aggregateKeyName + " = ?");
 								try {
@@ -426,19 +443,21 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 					}
 					if (definition.getChangeTracker() != null && trackChanges) {
-						for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
-							Value<Boolean> property = element.getProperty(PrimaryKeyProperty.getInstance());
-							if (property != null && property.getValue()) {
-								// if the input is generated and we set a collection name on the primary key, we assume it is for the table
-								// for generated inputs, we can't set properties on the root
-								if (definition.isInputGenerated()) {
-									Value<String> collectionProperty = element.getProperty(CollectionNameProperty.getInstance());
-									if (collectionProperty != null) {
-										tableName = collectionProperty.getValue();
+						if (primaryKey == null) {
+							for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
+								Value<Boolean> property = element.getProperty(PrimaryKeyProperty.getInstance());
+								if (property != null && property.getValue()) {
+									// if the input is generated and we set a collection name on the primary key, we assume it is for the table
+									// for generated inputs, we can't set properties on the root
+									if (definition.isInputGenerated()) {
+										Value<String> collectionProperty = element.getProperty(CollectionNameProperty.getInstance());
+										if (collectionProperty != null) {
+											tableName = uncamelify(collectionProperty.getValue());
+										}
 									}
+									primaryKey = element;
+									break;
 								}
-								primaryKey = element;
-								break;
 							}
 						}
 						if (primaryKey == null) {
