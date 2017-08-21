@@ -225,6 +225,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			
 			Long offset = content == null ? null : (Long) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
+			List<String> orderBys = content == null ? null : (List<String>) content.get(JDBCService.ORDER_BY);
 
 			// make sure we do a total count statement without limits & offsets
 			boolean includeTotalCount = content == null || content.get(JDBCService.INCLUDE_TOTAL_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_TOTAL_COUNT);
@@ -233,6 +234,48 @@ public class JDBCServiceInstance implements ServiceInstance {
 			// also check that it is not lazy cause we won't know the total count then even if not limited
 			if (includeTotalCount && (limit != null || lazy)) {
 				totalCountStatement = connection.prepareStatement(dialect.getTotalCountQuery(preparedSql));
+			}
+			
+			if (orderBys != null && !orderBys.isEmpty()) {
+				preparedSql += " ORDER BY ";
+				boolean isFirst = true;
+				for (String orderBy : orderBys) {
+					String direction = null;
+					int asc = orderBy.toLowerCase().indexOf(" asc");
+					if (asc > 0) {
+						orderBy = orderBy.substring(0, asc);
+						direction = "asc";
+					}
+					else {
+						int desc = orderBy.toLowerCase().indexOf(" desc");
+						if (desc > 0) {
+							orderBy = orderBy.substring(0, desc);
+							direction = "desc";
+						}
+					}
+					boolean fieldFound = false;
+					int orderByPosition = 0;
+					for (Element<?> element : TypeUtils.getAllChildren((ComplexType) getDefinition().getServiceInterface().getOutputDefinition().get(JDBCService.RESULTS).getType())) {
+						orderByPosition++;
+						if (element.getName().equals(orderBy)) {
+							fieldFound = true;
+							break;
+						}
+					}
+					if (!fieldFound) {
+						throw new ServiceException("JDBC-17", "Invalid order by field: " + orderBy);
+					}
+					if (isFirst) {
+						isFirst = false;
+					}
+					else {
+						preparedSql += ", ";
+					}
+					preparedSql += orderByPosition;
+					if (direction != null) {
+						preparedSql += " " + direction;
+					}
+				}
 			}
 			
 			boolean nativeLimit = false;
