@@ -72,6 +72,24 @@ public class JDBCServiceInstance implements ServiceInstance {
 		this.definition = definition;
 	}
 	
+	public static boolean isNullCheck(String sql, int index) {
+		if (sql == null) {
+			return false;
+		}
+		
+		// the index is 1-based but we want to wipe the index itself as well because we are interested in what is behind it
+		for (int i = 0; i < index; i++) {
+			int indexOf = sql.indexOf(':');
+			if (indexOf < 0) {
+				return false;
+			}
+			sql = sql.substring(indexOf + 1);
+		}
+		// remove the name of the parameter
+		sql = sql.replaceFirst("^[\\w]+?\\b", "");
+		return sql.matches("(?i)^[\\s]+is[\\s]+null\\b.*") || sql.matches("(?i)^[\\s]+is[\\s]+not[\\s]+null\\b.*");
+	}
+	
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Override
 	public ComplexContent execute(ExecutionContext executionContext, ComplexContent content) throws ServiceException {
@@ -175,51 +193,74 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			List<String> inputNames = hasNewVariables ? getDefinition().scanForPreparedVariables(preparedSql) : getDefinition().getInputNames();
 			
+			
 			SQLDialect dialect = dataSourceProvider.getDialect();
 			if (dialect == null) {
 				dialect = new DefaultDialect();
 			}
 
+			// this keeps track of the indexes where we are doing a null check (is null or is not null) on a listable object that is: not null and the dialect does not support arrays
+			// in this case we want to set something else
+			List<Integer> nullCheckIndexes = new ArrayList<Integer>();
+			// keeps track of calculated sizes in case the same parameter is used multiple times
+			Map<String, Integer> sizes = new HashMap<String, Integer>(); 
 			// if the dialect does not support arrays, rewrite the statement if necessary
+			int inputIndex = 1;
 			for (String inputName : inputNames) {
 				Element<?> element = type.get(inputName);
 				if (element != null && !dialect.hasArraySupport(element) && element.getType().isList(element.getProperties())) {
-					// we need to find the largest collection in the input
-					int maxSize = 0;
-					if (parameters != null) {
-						for (ComplexContent parameter : parameters) {
-							Object value = parameter.get(element.getName());
-							if (value != null) {
-								CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
-								if (handler == null) {
-									throw new IllegalArgumentException("Could not find handler for '" + element.getName() + "' of type: " + value.getClass());
-								}
-								Collection asCollection = handler.getAsCollection(value);
-								if (asCollection.size() > maxSize) {
-									maxSize = asCollection.size();
-								}
-							}
-						}
+					// if we are performing a null check, don't explode the parameter!
+					if (isNullCheck(preparedSql, inputIndex)) {
+						nullCheckIndexes.add(inputIndex);
+						// we mask the input parameter because if it is used multiple times our next hit (see replace below) may accidently convert this one instead of the next one
+						preparedSql = preparedSql.replaceFirst(":" + inputName + "\\b", ">>NULL_CHECK=" + inputName + "<<");
 					}
-					if (maxSize > 0) {
-						StringBuilder builder = new StringBuilder();
-						for (int i = 0; i < maxSize; i++) {
-//								newNames.add(inputName + "[" + i + "]");
-							if (i > 0) {
-								builder.append(", ");
+					else {
+						// we need to find the largest collection in the input
+						Integer maxSize = sizes.get(inputName);
+						if (maxSize == null) {
+							maxSize = 0;
+							if (parameters != null) {
+								for (ComplexContent parameter : parameters) {
+									Object value = parameter.get(element.getName());
+									if (value != null) {
+										CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
+										if (handler == null) {
+											throw new IllegalArgumentException("Could not find handler for '" + element.getName() + "' of type: " + value.getClass());
+										}
+										Collection asCollection = handler.getAsCollection(value);
+										if (asCollection.size() > maxSize) {
+											maxSize = asCollection.size();
+										}
+									}
+								}
 							}
-							// don't append the index because the rewritten statements are cached on a string basis, this would unnecessarily enlarge that cache
-							builder.append(":").append(inputName);
+							sizes.put(inputName, maxSize);
 						}
-						// repeat the last element a few times to get fewer "different" prepared statements
-						// prepared statements are partly nice because they are cached, generating too many different ones however will oust the old ones from the cache
-						for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
-							builder.append(", :").append(inputName);
+						
+						if (maxSize > 0) {
+							StringBuilder builder = new StringBuilder();
+							for (int i = 0; i < maxSize; i++) {
+	//								newNames.add(inputName + "[" + i + "]");
+								if (i > 0) {
+									builder.append(", ");
+								}
+								// don't append the index because the rewritten statements are cached on a string basis, this would unnecessarily enlarge that cache
+								builder.append(":").append(inputName);
+							}
+							// repeat the last element a few times to get fewer "different" prepared statements
+							// prepared statements are partly nice because they are cached, generating too many different ones however will oust the old ones from the cache
+							for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+								builder.append(", :").append(inputName);
+							}
+							preparedSql = preparedSql.replaceFirst(":" + inputName + "\\b", builder.toString());
 						}
-						preparedSql = preparedSql.replaceAll(":" + inputName + "\\b", builder.toString());
 					}
 				}
+				inputIndex++;
 			}
+			
+			preparedSql = preparedSql.replaceAll(">>NULL_CHECK=([^<]+)<<", ":$1");
 			
 			preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect(), preparedSql);
 			
@@ -342,29 +383,41 @@ public class JDBCServiceInstance implements ServiceInstance {
 								value = parameter.get(inputName);
 							}
 							if (!dialect.hasArraySupport(element) && value != null && element.getType().isList(element.getProperties())) {
-								CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
-								int amount = 0;
-								Object last = null;
-								for (Object single : handler.getAsIterable(value)) {
-									if (totalCountStatement != null) {
-										dialect.setObject(totalCountStatement, element, index, single);
+								// if it is a null check, we want to set the size of the element, not the actual array
+								// because the target dialect does not support arrays
+								// in this case it will become something like "5 is null"
+								if (nullCheckIndexes.contains(index)) {
+									CollectionHandlerProvider provider = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
+									if (provider == null) {
+										throw new RuntimeException("Unknown collection type: " + value.getClass());
 									}
-									dialect.setObject(statement, element, index++, single);
-									amount++;
-									last = single;
+									dialect.setObject(statement, element, index++, provider.getAsCollection(value).size(), preparedSql);
 								}
-								for (int i = amount; i < PREPARED_STATEMENT_ARRAY_SIZE - (amount % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
-									if (totalCountStatement != null) {
-										dialect.setObject(totalCountStatement, element, index, last);
+								else {
+									CollectionHandlerProvider handler = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
+									int amount = 0;
+									Object last = null;
+									for (Object single : handler.getAsIterable(value)) {
+										if (totalCountStatement != null) {
+											dialect.setObject(totalCountStatement, element, index, single, null);
+										}
+										dialect.setObject(statement, element, index++, single, preparedSql);
+										amount++;
+										last = single;
 									}
-									dialect.setObject(statement, element, index++, last);
+									for (int i = amount; i < PREPARED_STATEMENT_ARRAY_SIZE - (amount % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+										if (totalCountStatement != null) {
+											dialect.setObject(totalCountStatement, element, index, last, null);
+										}
+										dialect.setObject(statement, element, index++, last, preparedSql);
+									}
 								}
 							}
 							else {
 								if (totalCountStatement != null) {
-									dialect.setObject(totalCountStatement, element, index, value);
+									dialect.setObject(totalCountStatement, element, index, value, null);
 								}
-								dialect.setObject(statement, element, index++, value);
+								dialect.setObject(statement, element, index++, value, preparedSql);
 							}
 						}
 						if (isBatch) {
@@ -382,9 +435,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 					for (String inputName : inputNames) {
 						Element<?> element = type.get(inputName);
 						if (totalCountStatement != null) {
-							dialect.setObject(totalCountStatement, element, index, null);
+							dialect.setObject(totalCountStatement, element, index, null, null);
 						}
-						dialect.setObject(statement, element, index++, null);
+						dialect.setObject(statement, element, index++, null, preparedSql);
 					}
 					if (isBatch) {
 						if (totalCountStatement != null) {

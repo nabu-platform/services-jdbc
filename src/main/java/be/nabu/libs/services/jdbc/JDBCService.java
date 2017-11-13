@@ -280,16 +280,27 @@ public class JDBCService implements DefinedService {
 					startIndex = "select".length();
 				}
 				if (startIndex >= 0 && endIndex >= 0) {
+					int depth = 0;
 					String select = sql.trim().substring(startIndex, endIndex);
+					int unnamed = 0;
 					for (String part : select.split(",")) {
 						int opening = part.length() - part.replace("(", "").length();
+						depth += opening;
 						int closing = part.length() - part.replace(")", "").length();
+						depth -= closing;
 						// if we are in a method call, ignore it
-						if (opening > closing) {
+						if (depth > 0) {
 							continue;
 						}
 						String [] subParts = part.split("\\bas\\b");
 						String name = subParts.length > 1 ? subParts[1].trim() : subParts[0].trim();
+						int indexOf = name.indexOf('.');
+						if (indexOf >= 0) {
+							name = name.substring(indexOf + 1);
+						}
+						if (name.trim().isEmpty()) {
+							name = "unnamed" + unnamed++;
+						}
 						if (!name.matches("[\\w]+")) {
 							name = name.replaceAll("[^\\w]+", "_");
 						}

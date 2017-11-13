@@ -154,10 +154,10 @@ public interface SQLDialect {
 	
 	// this method sets the content of an element to the statement
 	@SuppressWarnings({ "rawtypes", "unchecked" })
-	public default void setObject(PreparedStatement statement, Element<?> element, int index, Object value) throws SQLException, ServiceException {
+	public default void setObject(PreparedStatement statement, Element<?> element, int index, Object value, String originalQuery) throws SQLException, ServiceException {
 		Logger logger = LoggerFactory.getLogger(getClass());
 		Converter converter = ConverterFactory.getInstance().getConverter();
-		
+
 		SimpleType<?> simpleType = (SimpleType<?>) element.getType();
 		logger.trace("Setting parameter '{}' = '{}'", element.getName(), value);
 		// if it's a string, let's check if it has an actual type
