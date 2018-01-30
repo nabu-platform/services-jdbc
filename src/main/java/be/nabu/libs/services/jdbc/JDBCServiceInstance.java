@@ -274,7 +274,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			// if we want a total count, check if there is a limit (if not, total count == actual count)
 			// also check that it is not lazy cause we won't know the total count then even if not limited
 			if (includeTotalCount && (limit != null || lazy)) {
-				totalCountStatement = connection.prepareStatement(dialect.getTotalCountQuery(preparedSql));
+				totalCountStatement = connection.prepareStatement(getDefinition().getTotalCountSql(dataSourceProvider.getDialect(), preparedSql));
 			}
 			
 			if (orderBys != null && !orderBys.isEmpty()) {
@@ -319,9 +319,14 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 			}
 			
+			boolean overSelected = content == null || content.get(JDBCService.HAS_NEXT) == null ? false : (Boolean) content.get(JDBCService.HAS_NEXT);
 			boolean nativeLimit = false;
 			// the limit is for selects
 			if (!isBatch && (offset != null || limit != null)) {
+				// we add one to the limit because we want to be able to set a boolean if there are more
+				if (limit != null && !lazy && overSelected) {
+					limit++;
+				}
 				if (dataSourceProvider.getDialect() != null) {
 					String limitedSql = dataSourceProvider.getDialect().limit(preparedSql, offset, limit);
 					if (limitedSql != null) {
@@ -727,6 +732,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						int recordCounter = 0;
 						int index = 0;
 						try {
+							boolean hasNext = false;
 							while (executeQuery.next()) {
 								// if we don't have a native (dialect) limit but we did set an offset, do it programmatically
 								if (!nativeLimit && offset != null) {
@@ -734,6 +740,15 @@ public class JDBCServiceInstance implements ServiceInstance {
 									if (recordCounter < offset) {
 										continue;
 									}
+								}
+								// index is 0-based and limit is 1-based
+								// we upped the limit by 1 additional one to overselect
+								if (overSelected && index > limit - 2) {
+									hasNext = true;
+									continue;
+								}
+								else if (hasNext) {
+									throw new SQLException("We selected too many records, hasNext is already set, where are the additional records coming from?");
 								}
 								ComplexContent result;
 								try {
@@ -743,6 +758,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 									throw new ServiceException("JDBC-4", "Invalid type", e);
 								}
 								output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
+								output.set(JDBCService.HAS_NEXT, hasNext);
 							}
 						}
 						finally {

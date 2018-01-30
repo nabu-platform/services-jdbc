@@ -34,7 +34,7 @@ import be.nabu.libs.types.utils.DateUtils;
 import be.nabu.libs.types.utils.DateUtils.Granularity;
 
 public interface SQLDialect {
-	
+
 	/**
 	 * Whether or not the database supports arrays as inputs
 	 */
@@ -286,7 +286,134 @@ public interface SQLDialect {
 	}
 	
 	public default String getTotalCountQuery(String query) {
-		return "select count(a.*) as total from (" + query + ") a";
+		return getDefaultTotalCountQuery(query);
+	}
+
+	public static String getDefaultTotalCountQuery(String query) {
+		// if the query is grouped, we can't do the optimized count as it will count within the grouping rules
+		if (isGrouped(query)) {
+			return "select count(a.*) as total from (" + query + ") a";
+		}
+		// otherwise we optimize the count query which can result in drastic performance increases
+		else {
+			// first we remove any order by statements, they can be massive performance drains and are not necessary to do a count
+			String[] split = query.split("(?i)order by");
+			StringBuilder builder = new StringBuilder();
+			for (int i = 0; i < split.length; i++) {
+				// the first part is the beginning of the query, just append it whole
+				if (i == 0) {
+					builder.append(split[i]);
+				}
+				// all the other parts follow an "order by statement"
+				else {
+					String content = split[i].trim();
+					boolean first = true;
+					// we want to strip any and all fields that are ordered by
+					// it can be sql-dialect specific which keywords can follow an "order by" so slightly harder to strip correctly based on what comes next
+					// instead we assume all field names are \w and optionally a . for table name
+					// we strip one field name, then we check if the first character after that is a ",", if so we are ordering by multiple fields
+					// note that we also check for optional asc or desc
+					while (first || content.startsWith(",")) {
+						if (first) {
+							first = false;
+						}
+						// skip the comma
+						else {
+							content = content.substring(1);
+						}
+						content = content.trim();
+						content = content.replaceFirst("^[\\w.]+", "").trim();
+						if (content.length() >= 3 && content.substring(0, 3).equalsIgnoreCase("asc")) {
+							content = content.substring(3);
+						}
+						if (content.length() >= 4 && content.substring(0, 4).equalsIgnoreCase("desc")) {
+							content = content.substring(4);
+						}
+					}
+					builder.append(" ").append(content).append(" ");
+				}
+			}
+			query = builder.toString();
+			// then we want to update the select statement and only select a count of the first field in the select
+			
+			builder = new StringBuilder();
+			Integer index = null;
+			while (index == null || index >= 0) {
+				index = query.toLowerCase().indexOf("select", index == null ? -1 : index + 1);
+				if (index >= 0) {
+					String first = query.substring(0, index);
+					int depth = (first.length() - first.replace("(", "").length()) - (first.length() - first.replace(")", "").length());
+					// if we are at depth 0, we are in the core select, we want to rewrite that
+					if (depth == 0) {
+						String second = query.substring(index);
+						// we append the begin part, whatever it may be (e.g. a with)
+						builder.append(first);
+						int from = second.toLowerCase().indexOf("from");
+						if (from < 0) {
+							throw new IllegalStateException("No from found");
+						}
+						String selected = null;
+						String [] selectString = second.substring("select".length(), from).split(",");
+
+						depth = 0;
+						for (String possible : selectString) {
+							// ugly but we want to get methods as a whole, so we don't accidently use a comma that is part of a nested method call
+							depth += (possible.length() - possible.replace("(", "").length()) - (possible.length() - possible.replace(")", "").length());
+							if (depth != 0) {
+								if (selected == null) {
+									selected = possible;
+								}
+								else {
+									selected += possible;
+								}
+							}
+							else {
+								possible = possible.trim();
+								if (possible.matches(".*\\bas\\b.*")) {
+									possible = possible.replaceFirst("^(.*?)\\bas\\b.*", "$1");
+								}
+								// we can't do a count on null, it always ends in 0 apparently!
+								if (!possible.equalsIgnoreCase("null")) {
+									if (selected == null) {
+										selected = possible;
+									}
+									else {
+										selected += possible;
+									}
+								}
+							}
+							// we have a full selection
+							if (selected != null && depth == 0) {
+								break;
+							}
+						}
+						if (selected == null) {
+							throw new IllegalArgumentException("Could not find a selectable field in: " + second.substring("select".length(), from));
+						}
+						selected = selected.trim();
+						builder.append("select count(").append(selected).append(") as total ").append(second.substring(from));
+					}
+				}
+			}
+			query = builder.toString();
+			return query;
+		}
+//		return "select count(a.*) as total from (" + query + ") a";
+	}
+	
+	public static boolean isGrouped(String sql) {
+		Integer index = null;
+		while (index == null || index >= 0) {
+			index = sql.toLowerCase().indexOf("group by", index == null ? -1 : index + 1);
+			if (index >= 0) {
+				String first = sql.substring(0, index);
+				int depth = (first.length() - first.replace("(", "").length()) - (first.length() - first.replace(")", "").length());
+				if (depth == 0) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 	
 	public static String getName(Value<?>...properties) {
@@ -295,5 +422,9 @@ public interface SQLDialect {
 			value = ValueUtils.getValue(NameProperty.getInstance(), properties);
 		}
 		return value;
+	}
+	
+	public default Integer getDefaultPort() {
+		return null;
 	}
 }

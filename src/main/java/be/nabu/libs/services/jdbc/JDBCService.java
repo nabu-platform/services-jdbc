@@ -69,6 +69,7 @@ public class JDBCService implements DefinedService {
 	public static final String ROW_COUNT = "rowCount";
 	public static final String TOTAL_ROW_COUNT = "totalRowCount";
 	public static final String ORDER_BY = "orderBy";
+	public static final String HAS_NEXT = "hasNext";
 	
 	private ChangeTracker changeTracker;
 	
@@ -77,6 +78,7 @@ public class JDBCService implements DefinedService {
 	private String id;
 
 	private Map<SQLDialect, Map<String, String>> preparedSql = new HashMap<SQLDialect, Map<String, String>>();
+	private Map<SQLDialect, Map<String, String>> totalCountSql = new HashMap<SQLDialect, Map<String, String>>();
 	
 	public JDBCService(String id) {
 		this.id = id;
@@ -100,6 +102,7 @@ public class JDBCService implements DefinedService {
 					input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<String>(ORDER_BY, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(INCLUDE_TOTAL_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(LAZY, wrapper.wrap(Boolean.class), input, 
 							new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), 
@@ -123,6 +126,7 @@ public class JDBCService implements DefinedService {
 					output.add(new SimpleElementImpl<Long>(GENERATED_KEYS, wrapper.wrap(Long.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					output.add(new SimpleElementImpl<Long>(ROW_COUNT, wrapper.wrap(Long.class), output));
 					output.add(new SimpleElementImpl<Long>(TOTAL_ROW_COUNT, wrapper.wrap(Long.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					output.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					this.output = output;
 				}
 			}
@@ -180,6 +184,24 @@ public class JDBCService implements DefinedService {
 			}
 		}
 		return preparedSql.get(dialect).get(sql);
+	}
+	
+	String getTotalCountSql(SQLDialect dialect, String sql) {
+		if (!totalCountSql.containsKey(dialect)) {
+			synchronized(totalCountSql) {
+				if (!totalCountSql.containsKey(dialect)) {
+					totalCountSql.put(dialect, new HashMap<String, String>());
+				}
+			}
+		}
+		if (!totalCountSql.get(dialect).containsKey(sql)) {
+			synchronized(totalCountSql.get(dialect)) {
+				if (!totalCountSql.get(dialect).containsKey(sql)) {
+					totalCountSql.get(dialect).put(sql, dialect == null ? SQLDialect.getDefaultTotalCountQuery(sql) : dialect.getTotalCountQuery(sql));
+				}
+			}
+		}
+		return totalCountSql.get(dialect).get(sql); 
 	}
 	
 	/**
