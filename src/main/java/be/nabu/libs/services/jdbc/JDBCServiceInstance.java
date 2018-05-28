@@ -8,6 +8,8 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -32,6 +34,8 @@ import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.Transactionable;
 import be.nabu.libs.services.jdbc.api.ChangeSet;
 import be.nabu.libs.services.jdbc.api.ChangeType;
+import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes;
+import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes.AffixMapping;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.CollectionHandlerFactory;
@@ -130,6 +134,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 		if (dataSourceProvider == null) {
 			throw new ServiceException("JDBC-1", "Can not find datasource provider: " + connectionId, connectionId);
 		}
+		
+		List<AffixMapping> affixes = dataSourceProvider instanceof DataSourceWithAffixes ? ((DataSourceWithAffixes) dataSourceProvider).getAffixes() : null;
 
 		// if it's not autocommitted, we need to check if there is already a transaction open on this resource for the given transaction id
 		Connection connection = null;
@@ -161,6 +167,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 			
 			if (preparedSql == null) {
 				throw new ServiceException("JDBC-7", "No sql found for: " + definition.getId() + ", expecting rewritten: " + definition.getSql());
+			}
+			else {
+				preparedSql = getDefinition().expandSql(preparedSql);
 			}
 
 			// map the additional properties to a map
@@ -263,6 +272,82 @@ public class JDBCServiceInstance implements ServiceInstance {
 			preparedSql = preparedSql.replaceAll(">>NULL_CHECK=([^<]+)<<", ":$1");
 			
 			preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect(), preparedSql);
+			
+			// if you have defined an affix, replace it
+//			String affix = content == null ? null : (String) content.get(JDBCService.AFFIX);
+			
+			// if no affix is given at runtime, check if we have some at design time in the connection artifact
+//			if (affix == null && affixes != null) {
+//				String match = null;
+//				for (AffixMapping mapping : affixes) {
+//					if (mapping.getNamespace() == null || definition.getId().startsWith(mapping.getNamespace())) {
+//						// if we already have a match, check that the new match is more precise, otherwise we skip it
+//						if (match != null) {
+//							if (mapping.getNamespace() == null || mapping.getNamespace().length() <= match.length()) {
+//								continue;
+//							}
+//						}
+//						affix = mapping.getAffix();
+//						match = mapping.getNamespace();
+//					}
+//				}
+//			}
+			
+//			preparedSql = preparedSql.replace("~", affix == null ? "" : affix);
+			
+			if (affixes != null) {
+				String match = null;
+				// we search the most specific match but matches that are equally specific are all used as you may be interested in giving different affixes to different tables
+				List<AffixMapping> applicableAffixes = new ArrayList<AffixMapping>();
+				for (AffixMapping mapping : affixes) {
+					if (mapping.getContext() == null || definition.getId().equals(mapping.getContext()) || definition.getId().startsWith(mapping.getContext() + ".")) {
+						// if we already have a match, check that the new match is more precise, otherwise we skip it
+						if (match != null) {
+							if (mapping.getContext() == null || mapping.getContext().length() < match.length()) {
+								continue;
+							}
+						}
+						match = mapping.getContext();
+						applicableAffixes.add(mapping);
+					}
+				}
+				// we sort the affixes with specific tables to the front as they are least likely to overlap
+				// generic catch all affixes (with no tables) are pushed to the back
+				Collections.sort(applicableAffixes, new Comparator<AffixMapping>() {
+					@Override
+					public int compare(AffixMapping o1, AffixMapping o2) {
+						boolean o1HasTables = o1.getTables() != null && !o1.getTables().isEmpty();
+						boolean o2HasTables = o2.getTables() != null && !o2.getTables().isEmpty();
+						if (o1HasTables && !o2HasTables) {
+							return -1;
+						}
+						else if (o2HasTables && !o1HasTables) {
+							return 1;
+						}
+						else {
+							return 0;
+						}
+					}
+				});
+				for (AffixMapping mapping : applicableAffixes) {
+					String affix = mapping.getAffix() == null ? "" : mapping.getAffix();
+					if (mapping.getTables() != null && !mapping.getTables().isEmpty()) {
+						for (String table : mapping.getTables()) {
+							// prefix
+							preparedSql = preparedSql.replaceAll("~" + table + "\\b", affix + table);
+							// suffix
+							preparedSql = preparedSql.replaceAll("\\b" + table + "~", table + affix);
+						}
+					}
+					// do a replace all for remaining tildes based on the given affix
+					else {
+						preparedSql = preparedSql.replace("~", affix);
+					}
+				}
+			}
+			
+			// replace any remaining affix notations (should only be because you didn't have any...)
+			preparedSql = preparedSql.replace("~", "");
 			
 			Long offset = content == null ? null : (Long) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);

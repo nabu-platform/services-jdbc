@@ -2,6 +2,7 @@ package be.nabu.libs.services.jdbc;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -11,6 +12,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import be.nabu.libs.property.ValueUtils;
+import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.api.DefinedService;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.ServiceInterface;
@@ -27,15 +30,24 @@ import be.nabu.libs.types.base.ComplexElementImpl;
 import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.java.BeanResolver;
+import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.CommentProperty;
+import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
+import be.nabu.libs.types.properties.NameProperty;
 import be.nabu.libs.types.structure.DefinedStructure;
 import be.nabu.libs.types.structure.Structure;
 import be.nabu.libs.validator.api.ValidationMessage;
 
 /**
  * TODO: If the result set is big, use windowed list and stream to file or stream straight from resultset if keeping the connection open is a viable option
+ * 
+ * There is an ugly dependency with the JDBCServiceManager: we set the sql first, because isInputGenerated and output are true by default
+ * We scan the sql to generate the input.
+ * Only afterwards do we set the actual type (if any) and disable the isInputGenerated
+ * Because for automatic statements we first set the generated to false and only then set the sql, there were no input parameters
+ * Currently updated the getInputParameters to generate them if they don't exist but it is not ideal...
  * 
  * Known issue: if you do getInput() and then setParameters(), the parameters in the original input are not updated!
  */
@@ -70,6 +82,7 @@ public class JDBCService implements DefinedService {
 	public static final String TOTAL_ROW_COUNT = "totalRowCount";
 	public static final String ORDER_BY = "orderBy";
 	public static final String HAS_NEXT = "hasNext";
+	public static final String AFFIX = "affix";
 	
 	private ChangeTracker changeTracker;
 	
@@ -107,6 +120,9 @@ public class JDBCService implements DefinedService {
 					input.add(new SimpleElementImpl<Boolean>(LAZY, wrapper.wrap(Boolean.class), input, 
 							new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), 
 							new ValueImpl<String>(CommentProperty.getInstance(), "When performing a select, the return value can be a lazy list based around a resultset.")));
+					// temporarily(?) disabled because harder to do it in a table-specific way
+					// perhaps supporting only pool-based prefixes is best?
+//					input.add(new SimpleElementImpl<String>(AFFIX, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					// allow a list of properties
 					input.add(new ComplexElementImpl(PROPERTIES, (ComplexType) BeanResolver.getInstance().resolve(KeyValuePair.class), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
@@ -179,7 +195,10 @@ public class JDBCService implements DefinedService {
 		if (!preparedSql.get(dialect).containsKey(sql)) {
 			synchronized(preparedSql.get(dialect)) {
 				if (!preparedSql.get(dialect).containsKey(sql)) {
-					preparedSql.get(dialect).put(sql, dialect == null ? sql : dialect.rewrite(sql, getParameters(), getResults()).replaceAll("(?<!:):[\\w]+", "?"));
+					String value = dialect == null ? sql : dialect.rewrite(sql, getParameters(), getResults());
+					// replace named parameters
+					value = value.replaceAll("(?<!:):[\\w]+", "?");
+					preparedSql.get(dialect).put(sql, value);
 				}
 			}
 		}
@@ -261,6 +280,34 @@ public class JDBCService implements DefinedService {
 		
 		boolean isSelect = sql != null && sql.trim().toLowerCase().startsWith("select");
 		boolean isWith = sql != null && sql.trim().toLowerCase().startsWith("with");
+		
+		// we have a CTE (common table expression)
+		// we need to check if it is in function of a select or not
+		if (isWith) {
+			int depth = 0;
+			// multiple brackets are combined into one part, e.g. ")))"
+			for (String part : sql.trim().split("\\b")) {
+				if (part.contains("(")) {
+					depth += (part.length() - part.replace("(", "").length());
+				}
+				if (part.contains(")")) {
+					depth -= (part.length() - part.replace(")", "").length());
+				}
+				// if we are at depth 0, we check for the keywords to see what the statement is
+				if (depth == 0) {
+					// yup, in a select
+					if (part.matches("(?i).*\\bselect\\b.*")) {
+						break;
+					}
+					else if (part.matches("(?i).*\\b(update|insert|delete)\\b.*")) {
+						// this bit was added later, we don't want the code below for isWith (or isSelect) to trigger
+						// in the initial version, CTE was only supported for selects
+						isWith = false;
+						break;
+					}
+				}
+			}
+		}
 		
 		if (isOutputGenerated) {
 			Structure results = (Structure) getResults();
@@ -362,6 +409,16 @@ public class JDBCService implements DefinedService {
 	}
 	
 	List<String> getInputNames() {
+		if (inputNames == null) {
+			List<String> inputNames = new ArrayList<String>();
+			Pattern pattern = Pattern.compile("(?<!:):[\\w]+");
+			Matcher matcher = pattern.matcher(sql);
+			inputNames = new ArrayList<String>();
+			while (matcher.find()) {
+				inputNames.add(matcher.group().substring(1));
+			}
+			this.inputNames = inputNames;
+		}
 		return inputNames;
 	}
 
@@ -497,4 +554,123 @@ public class JDBCService implements DefinedService {
 		this.dataSourceResolver = dataSourceResolver;
 	}
 
+	private String getNormalizedDepth(String sql, int wantedDepth) {
+		StringBuilder builder = new StringBuilder();
+		int depth = 0;
+		for (int i = 0; i < sql.length(); i++) {
+			if ('(' == sql.charAt(i)) {
+				depth++;
+			}
+			else if ('(' == sql.charAt(i)) {
+				depth--;
+			}
+			else if (depth == wantedDepth) {
+				builder.append(sql.charAt(i));
+			}
+		}
+		return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
+	}
+	
+	// expand a select * into actual fields if you have a defined output
+	public String expandSql(String sql) {
+		// only expand if we did not generate the output, we must have a defined value
+		if (!this.isOutputGenerated()) {
+			String base = this.getNormalizedDepth(sql, 0);
+			// if we do a select *, we want to dynamically match the output definition
+			if (base.startsWith("select * from ") || base.startsWith("select distinct * from")) {
+				List<String> fromBlacklist = Arrays.asList(",", "left", "outer", "inner", "join", "right", "on");
+				List<ComplexType> types = new ArrayList<ComplexType>();
+				ComplexType result = getResults();
+				while (result != null) {
+					types.add(result);
+					result = (ComplexType) result.getSuperType();
+				}
+				Collections.reverse(types);
+				List<Element<?>> inherited = new ArrayList<Element<?>>();
+				StringBuilder select = new StringBuilder();
+				String from = base.replaceAll("^select (?:distinct |)\\* from (.*?)\\b(?:where|order by|group by|limit|offset|having|window|union|except|intersect|fetch|for update|for share|$)\\b.*", "$1");
+				for (ComplexType type : types) {
+					Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
+					
+					String typeName = JDBCServiceInstance.uncamelify(getName(type.getProperties()));
+					String bindingName = typeName;
+					
+					// find the binding name if necessary
+					if (value == null || !value) {
+						String[] split = from.split("\\b" + typeName + "\\b(?!\\.)", -1);
+						if (split.length > 2) {
+							throw new IllegalStateException("Can not expand select *, there are multiple bindings for table: " + typeName);
+						}
+						else if (split.length < 2) {
+							throw new IllegalStateException("Can not expand select *, no binding found for table: " + typeName);
+						}
+						String possibleName = split[1].trim();
+						int firstSpace = possibleName.indexOf(' ');
+						if (firstSpace >= 0) {
+							possibleName = possibleName.substring(0, firstSpace);
+							// must be a word
+							if (!fromBlacklist.contains(possibleName) && possibleName.matches("[\\w]+")) {
+								bindingName = possibleName;
+							}
+						}
+						// if we have some content and no whitespace, it is probably the binding name
+						else if (possibleName.length() > 0) {
+							bindingName = possibleName;
+						}
+						// if we did not provide an alias, we want to check if we added an affix
+						if (bindingName.equals(typeName)) {
+							if (split[0].length() > 0 && split[0].charAt(split[0].length() - 1) == '~') {
+								bindingName = "~" + bindingName;
+							}
+							else if (split[1].length() > 0 && split[1].charAt(0) == '~') {
+								bindingName = bindingName + "~";
+							}
+						}
+					}
+					
+					if (!inherited.isEmpty() && (value == null || !value)) {
+						for (Element<?> child : inherited) {
+							if (!select.toString().isEmpty()) {
+								select.append(",\n");
+							}
+							select.append("\t" + bindingName + "." + JDBCServiceInstance.uncamelify(child.getName()));
+						}
+						inherited.clear();
+					}
+					for (Element<?> child : type) {
+						if (value != null && value) {
+							inherited.add(child);
+						}
+						else {
+							if (!select.toString().isEmpty()) {
+								select.append(",\n");
+							}
+							select.append("\t" + bindingName + "." + JDBCServiceInstance.uncamelify(child.getName()));
+						}
+					}
+				}
+				int depth = 0;
+				for (int i = 0; i < sql.length(); i++) {
+					if (sql.charAt(i) == '(') {
+						depth++;
+					}
+					else if (sql.charAt(i) == ')') {
+						depth--;
+					}
+					else if (sql.charAt(i) == '*' && depth == 0) {
+						return sql.substring(0, i) + "\n" + select.toString() + "\n" + sql.substring(i + 1);
+					}
+				}
+			}
+		}
+		return sql;
+	}
+	
+	public static String getName(Value<?>...properties) {
+		String value = ValueUtils.getValue(CollectionNameProperty.getInstance(), properties);
+		if (value == null) {
+			value = ValueUtils.getValue(NameProperty.getInstance(), properties);
+		}
+		return value;
+	}
 }
