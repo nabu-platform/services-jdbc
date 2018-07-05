@@ -41,6 +41,15 @@ import be.nabu.libs.types.structure.Structure;
 import be.nabu.libs.validator.api.ValidationMessage;
 
 /**
+ * TODO: allow setting of schema (e.g. https://github.com/WASdev/standards.jsr352.jbatch/blob/c55cc5ee9676f8da0ba2b2646aa78cabf7e3279f/com.ibm.jbatch.container/src/main/java/com/ibm/jbatch/container/services/impl/JDBCPersistenceManagerImpl.java#L392)
+ * can use "SET SCHEMA ?" for most databases and "USE SCHEMA" for mysql
+ * no support from mssql (afaik) and oracle should support it even though there is an exception for it in the above code
+ * checked postgres, db2, oracle
+ * the schema is valid for the entire connection (that means any statements that follow on the same connection)
+ * set if explicitly with a dedicated service? only downside is that it does not work for autocommit connections (but who uses that anyway...)
+ * alternative is to have it as input parameter for the jdbc service but that seems to imply that it is only valid for that statement
+ * while in actuality it is for that statement and any that follows that does not explicitly override it.
+ * 
  * TODO: If the result set is big, use windowed list and stream to file or stream straight from resultset if keeping the connection open is a viable option
  * 
  * There is an ugly dependency with the JDBCServiceManager: we set the sql first, because isInputGenerated and output are true by default
