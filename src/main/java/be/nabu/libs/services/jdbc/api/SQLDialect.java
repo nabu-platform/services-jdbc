@@ -25,6 +25,7 @@ import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
 import be.nabu.libs.types.api.Unmarshallable;
+import be.nabu.libs.types.base.Duration;
 import be.nabu.libs.types.properties.ActualTypeProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.FormatProperty;
@@ -70,7 +71,7 @@ public interface SQLDialect {
 	 * The reverse conversion is done automatically by assigning it to the complex content of the result
 	 */
 	public default Class<?> getTargetClass(Class<?> clazz) {
-		return clazz != null && (URI.class.isAssignableFrom(clazz) || clazz.isEnum()) ? String.class : clazz;
+		return clazz != null && (URI.class.isAssignableFrom(clazz) || clazz.isEnum() || Duration.class.isAssignableFrom(clazz)) ? String.class : clazz;
 	}
 	
 	public default Integer getSQLType(Element<?> element) {
@@ -79,7 +80,7 @@ public interface SQLDialect {
 	}
 	
 	public default Integer getSQLType(Class<?> instanceClass) {
-		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass) || instanceClass.isEnum()) {
+		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass) || instanceClass.isEnum() || Duration.class.isAssignableFrom(instanceClass)) {
 			return Types.VARCHAR;
 		}
 		else if (byte[].class.isAssignableFrom(instanceClass)) {
@@ -120,7 +121,7 @@ public interface SQLDialect {
 	}
 	
 	public default String getSQLName(Class<?> instanceClass) {
-		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass) || UUID.class.isAssignableFrom(instanceClass) || instanceClass.isEnum()) {
+		if (String.class.isAssignableFrom(instanceClass) || char[].class.isAssignableFrom(instanceClass) || URI.class.isAssignableFrom(instanceClass) || UUID.class.isAssignableFrom(instanceClass) || instanceClass.isEnum() || Duration.class.isAssignableFrom(instanceClass)) {
 			return "varchar";
 		}
 		else if (byte[].class.isAssignableFrom(instanceClass)) {

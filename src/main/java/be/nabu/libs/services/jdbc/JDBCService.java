@@ -417,7 +417,7 @@ public class JDBCService implements DefinedService {
 		return inputNames;
 	}
 	
-	List<String> getInputNames() {
+	public List<String> getInputNames() {
 		if (inputNames == null) {
 			List<String> inputNames = new ArrayList<String>();
 			Pattern pattern = Pattern.compile("(?<!:):[\\w]+");

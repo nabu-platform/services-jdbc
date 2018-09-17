@@ -38,16 +38,23 @@ import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes;
 import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes.AffixMapping;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
+import be.nabu.libs.types.BaseTypeInstance;
 import be.nabu.libs.types.CollectionHandlerFactory;
 import be.nabu.libs.types.ComplexContentWrapperFactory;
+import be.nabu.libs.types.DefinedTypeResolverFactory;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
+import be.nabu.libs.types.TypeConverterFactory;
 import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.CollectionHandlerProvider;
 import be.nabu.libs.types.api.ComplexContent;
 import be.nabu.libs.types.api.ComplexType;
+import be.nabu.libs.types.api.DefinedSimpleType;
+import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.SimpleType;
+import be.nabu.libs.types.api.TypedKeyValuePair;
 import be.nabu.libs.types.base.SimpleElementImpl;
+import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.properties.AggregateProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
@@ -173,14 +180,44 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 
 			// map the additional properties to a map
-			Map<String, String> additional = new HashMap<String, String>();
+			Map<String, Object> additional = new HashMap<String, Object>();
+			// TODO: the additional typing is not yet respected when rewriting the query
+			Map<String, SimpleType<?>> additionalTypes = new HashMap<String, SimpleType<?>>();
+			
 			List keyValuePairs = content == null ? null : (List) content.get(JDBCService.PROPERTIES);
 			if (keyValuePairs != null) {
 				for (Object keyValuePair : keyValuePairs) {
 					ComplexContent keyValuePairContent = keyValuePair instanceof ComplexContent ? (ComplexContent) keyValuePair : ComplexContentWrapperFactory.getInstance().getWrapper().wrap(keyValuePair);
-					additional.put((String) keyValuePairContent.get("key"), (String) keyValuePairContent.get("value"));
+					Object typed = TypeConverterFactory.getInstance().getConverter().convert(keyValuePairContent, new BaseTypeInstance(keyValuePairContent.getType()), new BaseTypeInstance((ComplexType) BeanResolver.getInstance().resolve(TypedKeyValuePair.class)));
+					String additionalType = typed == null ? null : (String) ((ComplexContent) typed).get("type");
+					Object value = keyValuePairContent.get("value");
+					
+					DefinedSimpleType<?> simpleType = null;
+					if (additionalType != null) {
+						simpleType = SimpleTypeWrapperFactory.getInstance().getWrapper().getByName(additionalType);
+						if (simpleType == null) {
+							DefinedType resolve = DefinedTypeResolverFactory.getInstance().getResolver().resolve(additionalType);
+							if (resolve instanceof SimpleType) {
+								simpleType = (DefinedSimpleType<?>) resolve;
+							}
+						}
+					}
+					if (simpleType == null) {
+						simpleType = SimpleTypeWrapperFactory.getInstance().getWrapper().wrap(String.class);
+					}
+					
+					if (value != null && !simpleType.getInstanceClass().isAssignableFrom(value.getClass())) {
+						Object converted = converter.convert(value, simpleType.getInstanceClass());
+						if (converted == null) {
+							throw new IllegalArgumentException("Could not convert " + value + " to " + simpleType.getInstanceClass());
+						}
+						value = converted;
+					}
+					additional.put((String) keyValuePairContent.get("key"), value);
+					additionalTypes.put((String) keyValuePairContent.get("key"), simpleType);
 				}
 			}
+			
 			
 			Pattern pattern = Pattern.compile("\\$[\\w]+");
 			Matcher matcher = pattern.matcher(preparedSql);
@@ -192,7 +229,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				if (value == null) {
 					value = additional.get(name);
 				}
-				String replacement = value == null ? null : converter.convert(value, String.class);
+				String replacement = value == null || value instanceof String ? (String) value : converter.convert(value, String.class);
 				// possible but unlikely to create false positives
 				// worst case scenario we do runtime calculation of parameters instead of cached because of this
 				if (replacement != null) {
@@ -295,59 +332,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			
 //			preparedSql = preparedSql.replace("~", affix == null ? "" : affix);
 			
-			if (affixes != null) {
-				String match = null;
-				// we search the most specific match but matches that are equally specific are all used as you may be interested in giving different affixes to different tables
-				List<AffixMapping> applicableAffixes = new ArrayList<AffixMapping>();
-				for (AffixMapping mapping : affixes) {
-					if (mapping.getContext() == null || definition.getId().equals(mapping.getContext()) || definition.getId().startsWith(mapping.getContext() + ".")) {
-						// if we already have a match, check that the new match is more precise, otherwise we skip it
-						if (match != null) {
-							if (mapping.getContext() == null || mapping.getContext().length() < match.length()) {
-								continue;
-							}
-						}
-						match = mapping.getContext();
-						applicableAffixes.add(mapping);
-					}
-				}
-				// we sort the affixes with specific tables to the front as they are least likely to overlap
-				// generic catch all affixes (with no tables) are pushed to the back
-				Collections.sort(applicableAffixes, new Comparator<AffixMapping>() {
-					@Override
-					public int compare(AffixMapping o1, AffixMapping o2) {
-						boolean o1HasTables = o1.getTables() != null && !o1.getTables().isEmpty();
-						boolean o2HasTables = o2.getTables() != null && !o2.getTables().isEmpty();
-						if (o1HasTables && !o2HasTables) {
-							return -1;
-						}
-						else if (o2HasTables && !o1HasTables) {
-							return 1;
-						}
-						else {
-							return 0;
-						}
-					}
-				});
-				for (AffixMapping mapping : applicableAffixes) {
-					String affix = mapping.getAffix() == null ? "" : mapping.getAffix();
-					if (mapping.getTables() != null && !mapping.getTables().isEmpty()) {
-						for (String table : mapping.getTables()) {
-							// prefix
-							preparedSql = preparedSql.replaceAll("~" + table + "\\b", affix + table);
-							// suffix
-							preparedSql = preparedSql.replaceAll("\\b" + table + "~", table + affix);
-						}
-					}
-					// do a replace all for remaining tildes based on the given affix
-					else {
-						preparedSql = preparedSql.replace("~", affix);
-					}
-				}
-			}
-			
-			// replace any remaining affix notations (should only be because you didn't have any...)
-			preparedSql = preparedSql.replace("~", "");
+			preparedSql = replaceAffixes(definition, affixes, preparedSql);
 			
 			Long offset = content == null ? null : (Long) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
@@ -460,7 +445,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 									// we could try to magically parse it but that could lead to irritating edge cases
 									// we could try to allow you to send objects instead of strings but then we might still need additional metadata about the objects (e.g. date)
 									// so we strictly limit it to strings, in that edge case that you need actual types, you need to convert them in sql
-									element = new SimpleElementImpl<String>(inputName, SimpleTypeWrapperFactory.getInstance().getWrapper().wrap(String.class), null);
+									element = new SimpleElementImpl(inputName, additionalTypes.get(inputName), null);
 								}
 								else {
 									throw new ServiceException("JDBC-2", "Can not determine the metadata for the field: " + inputName, inputName);
@@ -929,6 +914,63 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 			}
 		}
+	}
+
+	public static String replaceAffixes(JDBCService definition, List<AffixMapping> affixes, String preparedSql) {
+		if (affixes != null) {
+			String match = null;
+			// we search the most specific match but matches that are equally specific are all used as you may be interested in giving different affixes to different tables
+			List<AffixMapping> applicableAffixes = new ArrayList<AffixMapping>();
+			for (AffixMapping mapping : affixes) {
+				if (mapping.getContext() == null || definition.getId().equals(mapping.getContext()) || definition.getId().startsWith(mapping.getContext() + ".")) {
+					// if we already have a match, check that the new match is more precise, otherwise we skip it
+					if (match != null) {
+						if (mapping.getContext() == null || mapping.getContext().length() < match.length()) {
+							continue;
+						}
+					}
+					match = mapping.getContext();
+					applicableAffixes.add(mapping);
+				}
+			}
+			// we sort the affixes with specific tables to the front as they are least likely to overlap
+			// generic catch all affixes (with no tables) are pushed to the back
+			Collections.sort(applicableAffixes, new Comparator<AffixMapping>() {
+				@Override
+				public int compare(AffixMapping o1, AffixMapping o2) {
+					boolean o1HasTables = o1.getTables() != null && !o1.getTables().isEmpty();
+					boolean o2HasTables = o2.getTables() != null && !o2.getTables().isEmpty();
+					if (o1HasTables && !o2HasTables) {
+						return -1;
+					}
+					else if (o2HasTables && !o1HasTables) {
+						return 1;
+					}
+					else {
+						return 0;
+					}
+				}
+			});
+			for (AffixMapping mapping : applicableAffixes) {
+				String affix = mapping.getAffix() == null ? "" : mapping.getAffix();
+				if (mapping.getTables() != null && !mapping.getTables().isEmpty()) {
+					for (String table : mapping.getTables()) {
+						// prefix
+						preparedSql = preparedSql.replaceAll("~" + table + "\\b", affix + table);
+						// suffix
+						preparedSql = preparedSql.replaceAll("\\b" + table + "~", table + affix);
+					}
+				}
+				// do a replace all for remaining tildes based on the given affix
+				else {
+					preparedSql = preparedSql.replace("~", affix);
+				}
+			}
+		}
+		
+		// replace any remaining affix notations (should only be because you didn't have any...)
+		preparedSql = preparedSql.replace("~", "");
+		return preparedSql;
 	}
 
 	private String getTableName(PreparedStatement statement, int position) {
