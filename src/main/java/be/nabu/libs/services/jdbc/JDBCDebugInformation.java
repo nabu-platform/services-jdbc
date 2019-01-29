@@ -5,7 +5,7 @@ import javax.xml.bind.annotation.XmlRootElement;
 @XmlRootElement(name = "jdbc")
 public class JDBCDebugInformation {
 	
-	private String connectionId, transactionId, sql;
+	private String connectionId, transactionId, sql, totalCountSql;
 	private Integer inputAmount, outputAmount;
 	private Long executionDuration, mappingDuration;
 	
@@ -51,5 +51,10 @@ public class JDBCDebugInformation {
 	public void setMappingDuration(Long mappingDuration) {
 		this.mappingDuration = mappingDuration;
 	}
-	
+	public String getTotalCountSql() {
+		return totalCountSql;
+	}
+	public void setTotalCountSql(String totalCountSql) {
+		this.totalCountSql = totalCountSql;
+	}
 }

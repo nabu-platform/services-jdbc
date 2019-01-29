@@ -288,6 +288,7 @@ public class JDBCService implements DefinedService {
 		}
 		
 		boolean isSelect = sql != null && sql.trim().toLowerCase().startsWith("select");
+		boolean isUpdate = sql != null && sql.trim().toLowerCase().startsWith("update");
 		boolean isWith = sql != null && sql.trim().toLowerCase().startsWith("with");
 		
 		// we have a CTE (common table expression)
@@ -309,6 +310,7 @@ public class JDBCService implements DefinedService {
 						break;
 					}
 					else if (part.matches("(?i).*\\b(update|insert|delete)\\b.*")) {
+						isUpdate = part.equalsIgnoreCase("update");
 						// this bit was added later, we don't want the code below for isWith (or isSelect) to trigger
 						// in the initial version, CTE was only supported for selects
 						isWith = false;
@@ -331,7 +333,7 @@ public class JDBCService implements DefinedService {
 			if (sql != null && (isSelect || isWith)) {
 				int endIndex = -1;
 				int startIndex = -1;
-				if (isWith) {
+				if (isWith || true) {
 					int depth = 0;
 					int offset = 0;
 					// multiple brackets are combined into one part, e.g. ")))"
@@ -404,6 +406,17 @@ public class JDBCService implements DefinedService {
 		else {
 			getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0));
 		}
+		
+		Element<?> element = getInput().get("language");
+		if (isUpdate || isSelect) {
+			if (element == null) {
+				getInput().add(new SimpleElementImpl<String>("language", wrapper.wrap(String.class), getInput(), new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+			}
+		}
+		else if (element != null) {
+			getInput().remove(element);
+		}
+		
 		return messages;
 	}
 	

@@ -305,6 +305,7 @@ public interface SQLDialect {
 				if (i == 0) {
 					builder.append(split[i]);
 				}
+				// we are not interested in the order by but we might be interested in what comes _after_ the order by (if anything)
 				// all the other parts follow an "order by statement"
 				else {
 					String content = split[i].trim();
@@ -314,16 +315,38 @@ public interface SQLDialect {
 					// instead we assume all field names are \w and optionally a . for table name
 					// we strip one field name, then we check if the first character after that is a ",", if so we are ordering by multiple fields
 					// note that we also check for optional asc or desc
-					while (first || content.startsWith(",")) {
+					while (first || content.startsWith(",") || content.startsWith("(")) {
 						if (first) {
 							first = false;
+							content = content.replaceFirst("^[\\w.]+", "").trim();
 						}
 						// skip the comma
-						else {
+						else if (content.startsWith(",")) {
 							content = content.substring(1);
+							content = content.trim();
+							content = content.replaceFirst("^[\\w.]+", "").trim();
 						}
-						content = content.trim();
-						content = content.replaceFirst("^[\\w.]+", "").trim();
+						// we have a leading (, check where it ends
+						else {
+							int depth = 0;
+							int until = -1;
+							for (int j = 0; j < content.length(); j++) {
+								if (content.charAt(j) == '(') {
+									depth++;
+								}
+								else if (content.charAt(j) == ')') {
+									depth--;
+								}
+								if (depth == 0) {
+									until = j;
+									break;
+								}
+							}
+							if (until < 0) {
+								throw new IllegalArgumentException("Invalid depth");
+							}
+							content = content.substring(until + 1);
+						}
 						if (content.length() >= 3 && content.substring(0, 3).equalsIgnoreCase("asc")) {
 							content = content.substring(3);
 						}
@@ -349,10 +372,12 @@ public interface SQLDialect {
 						String second = query.substring(index);
 						// we append the begin part, whatever it may be (e.g. a with)
 						builder.append(first);
-						int from = second.toLowerCase().indexOf("from");
-						if (from < 0) {
+						String[] split2 = second.toLowerCase().split("(?i)[\\s]*\\bfrom\\b");
+//						int from = second.toLowerCase().indexOf("from");
+						if (split2.length < 2) {
 							throw new IllegalStateException("No from found");
 						}
+						int from = split2[0].length();
 						String selected = null;
 						String [] selectString = second.substring("select".length(), from).split(",");
 

@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -35,8 +36,11 @@ import be.nabu.libs.services.api.Transactionable;
 import be.nabu.libs.services.jdbc.api.ChangeSet;
 import be.nabu.libs.services.jdbc.api.ChangeType;
 import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes;
+import be.nabu.libs.services.jdbc.api.DataSourceWithTranslator;
 import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes.AffixMapping;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
+import be.nabu.libs.services.jdbc.api.JDBCTranslator;
+import be.nabu.libs.services.jdbc.api.JDBCTranslator.Translation;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.BaseTypeInstance;
 import be.nabu.libs.types.CollectionHandlerFactory;
@@ -109,7 +113,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 			List<? extends Validation<?>> validations = validator.validate(content);
 			for (Validation<?> validation : validations) {
 				if (validation.getSeverity() == Severity.CRITICAL || validation.getSeverity() == Severity.ERROR) {
-					throw new ServiceException("JDBC-5", "The input is not valid: " + validations);
+					ServiceException serviceException = new ServiceException("JDBC-5", "The input is not valid: " + validations);
+					serviceException.setValidations(validations);
+					throw serviceException;
 				}
 			}
 		}
@@ -170,6 +176,166 @@ public class JDBCServiceInstance implements ServiceInstance {
 			if (object != null) {
 				parameters = toContentCollection(object); 
 			}
+			
+			// --------------------- language handler for update ------------------------
+			Element<?> languageElement = content.getType().get("language");
+			String language = null;
+			if (languageElement != null) {
+				language = (String) content.get("language");
+			}
+			// this combination is only possible for an update at which point we want to actually update translations
+			// must have a translator
+			if (isBatch && language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null
+					// if there is no default language or it differs from the one you are updating, we need to put it to translations
+					&& (((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() == null || !((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage().equals(language))) {
+				
+				List<Translation> translations = new ArrayList<Translation>();
+				if (parameters != null && !parameters.isEmpty()) {
+					Element<?> primaryKey = null;
+					String tableName = null;
+					
+					for (ComplexContent parameter : parameters) {
+						if (tableName == null) {
+							String collectionProperty = ValueUtils.getValue(CollectionNameProperty.getInstance(), parameter.getType().getProperties());
+							if (collectionProperty != null) {
+								tableName = uncamelify(collectionProperty);
+							}
+						}
+						if (primaryKey == null) {
+							for (Element<?> child : TypeUtils.getAllChildren(parameter.getType())) {
+								Value<Boolean> primaryKeyProperty = child.getProperty(PrimaryKeyProperty.getInstance());
+								if (primaryKeyProperty != null && primaryKeyProperty.getValue()) {
+									if (tableName == null) {
+										// if the input is generated and we set a collection name on the primary key, we assume it is for the table
+										// for generated inputs, we can't set properties on the root
+										Value<String> collectionProperty = child.getProperty(CollectionNameProperty.getInstance());
+										if (collectionProperty != null) {
+											tableName = uncamelify(collectionProperty.getValue());
+										}
+									}
+									primaryKey = child;
+								}
+								break;
+							}
+						}
+					}
+					if (primaryKey == null) {
+						throw new ServiceException("JDBC-18", "Primary key needed to perform auto-translations");
+					}
+					if (tableName == null) {
+						throw new ServiceException("JDBC-14", "Can not determine the table name for translations");
+					}
+					
+					// we want to select the current records to check which fields are actually different
+					StringBuilder selectBuilder = new StringBuilder();
+					String primaryKeyName = uncamelify(primaryKey.getName());
+					selectBuilder.append("select ");
+					
+					boolean first = true;
+					for (Element<?> child : TypeUtils.getAllChildren(definition.getParameters())) {
+						if (first) {
+							first = false;
+						}
+						else {
+							selectBuilder.append(", ");
+						}
+						selectBuilder.append(uncamelify(child.getName()));
+					}
+					
+					selectBuilder.append(" from " + tableName + " where ");
+					first = true;
+					for (@SuppressWarnings("unused") ComplexContent parameter : parameters) {
+						if (first) {
+							first = false;
+						}
+						else {
+							selectBuilder.append(" or ");
+						}
+						selectBuilder.append(primaryKeyName + " = ?");
+					}
+					Map<Object, ComplexContent> originalVersions = new HashMap<Object, ComplexContent>();
+					PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
+					try {
+						int i = 1;
+						for (ComplexContent parameter : parameters) {
+							Object idObject = parameter.get(primaryKey.getName());
+							if (idObject == null) {
+								throw new ServiceException("JDBC-11", "No primary key present in the input");
+							}
+							selectAll.setObject(i++, idObject);
+						}
+						ResultSet executeQuery = selectAll.executeQuery();
+						while (executeQuery.next()) {
+							ComplexContent result = ResultSetCollectionHandler.convert(executeQuery, definition.getParameters());
+							Object idObject = result.get(primaryKey.getName());
+							originalVersions.put(idObject, result);
+						}
+					}
+					finally {
+						selectAll.close();
+					}
+					
+					for (ComplexContent parameter : parameters) {
+						Object idObject = parameter.get(primaryKey.getName());
+						ComplexContent original = originalVersions.get(idObject);
+						if (original == null) {
+							throw new ServiceException("JDBC-20", "No original found for translations for: " + tableName + " id " + idObject);
+						}
+						
+						String id = null;
+						// if the primary key is a uuid, it is globally unique, no additional identifier necessary
+						if (((SimpleType<?>) primaryKey.getType()).getInstanceClass().equals(UUID.class)) {
+							id = idObject.toString().replace("-", "");
+						}
+						else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
+							id = idObject.toString().replace("-", "");
+						}
+						else {
+							id = tableName + ":" + converter.convert(idObject, String.class);
+						}
+						
+						for (Element<?> child : TypeUtils.getAllChildren(parameter.getType())) {
+							if (child.getType() instanceof SimpleType) {
+								Class<?> instanceClass = ((SimpleType<?>) child.getType()).getInstanceClass();
+								if (String.class.isAssignableFrom(instanceClass) || converter.canConvert(instanceClass, String.class)) {
+									Translation translation = new Translation();
+									translation.setId(id);
+									translation.setName(child.getName());
+									Object translatedValue = parameter.get(child.getName());
+									Object originalValue = original.get(child.getName());
+									
+									if (originalValue != null && translatedValue != null && !translatedValue.getClass().isAssignableFrom(originalValue.getClass())) {
+										originalValue = converter.convert(originalValue, translatedValue.getClass());
+									}
+									
+									// if the values are the same, we set the translated to null as the original is OK
+									if ((translatedValue == null && originalValue == null)
+											|| (translatedValue != null && translatedValue.equals(originalValue))) {
+										translatedValue = null;
+									}
+									translation.setTranslation(translatedValue == null || translatedValue instanceof String ? (String) translatedValue : converter.convert(translatedValue, String.class));
+									translations.add(translation);
+								}
+							}
+						}
+					}
+					
+					// if not empty, push it
+					if (!translations.isEmpty()) {
+						((DataSourceWithTranslator) dataSourceProvider).getTranslator().set(connectionId, transactionId, language, translations);
+					}
+					
+				}
+				// need primary key in the definition of the object
+				// if the primary key is a uuid, that is enough, otherwise we take the table name combined with the id as key
+				
+				
+				// -------------------------------- EARLY RETURN... -------------------------
+				ComplexContent output = getDefinition().getOutput().newInstance();
+				output.set("rowCount", 0);
+				return output;
+			}
+			
 			String preparedSql = getDefinition().getSql();
 			
 			if (preparedSql == null) {
@@ -344,7 +510,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 			// if we want a total count, check if there is a limit (if not, total count == actual count)
 			// also check that it is not lazy cause we won't know the total count then even if not limited
 			if (includeTotalCount && (limit != null || lazy)) {
-				totalCountStatement = connection.prepareStatement(getDefinition().getTotalCountSql(dataSourceProvider.getDialect(), preparedSql));
+				String totalCountSql = getDefinition().getTotalCountSql(dataSourceProvider.getDialect(), preparedSql);
+				if (debug != null) {
+					debug.setTotalCountSql(totalCountSql);
+				}
+				totalCountStatement = connection.prepareStatement(totalCountSql);
 			}
 			
 			if (orderBys != null && !orderBys.isEmpty()) {
@@ -787,6 +957,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 						debug.setExecutionDuration(executionTime);
 					}
 					if (lazy) {
+						if (language != null) {
+							throw new ServiceException("JDBC-19", "Language is not supported in combination with lazy because of performance reasons");
+						}
 						if (!executeQuery.next()) {
 							executeQuery.close();
 							output.set(JDBCService.ROW_COUNT, 0);
@@ -829,6 +1002,17 @@ public class JDBCServiceInstance implements ServiceInstance {
 								}
 								output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
 								output.set(JDBCService.HAS_NEXT, hasNext);
+							}
+							// if we have a language that differs from the default one, we need to translate the results
+							if (language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null
+								&& (((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() == null || !((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage().equals(language))) {
+								postTranslate(
+									connectionId,
+									transactionId,
+									language,
+									((DataSourceWithTranslator) dataSourceProvider).getTranslator(),
+									(List<ComplexContent>) output.get(JDBCService.RESULTS),
+									statement);
 							}
 						}
 						finally {
@@ -911,6 +1095,98 @@ public class JDBCServiceInstance implements ServiceInstance {
 				ServiceRuntime runtime = ServiceRuntime.getRuntime();
 				if (runtime != null && runtime.getRuntimeTracker() != null) {
 					runtime.getRuntimeTracker().report(debug);
+				}
+			}
+		}
+	}
+
+	private void postTranslate(String connectionId, String transactionId, String language, JDBCTranslator translator, List<ComplexContent> list, PreparedStatement statement) throws ServiceException, SQLException {
+		Element<?> primaryKey = null;
+		String tableName = null;
+		List<String> ids = new ArrayList<String>();
+		for (ComplexContent parameter : list) {
+			if (tableName == null) {
+				String collectionProperty = ValueUtils.getValue(CollectionNameProperty.getInstance(), parameter.getType().getProperties());
+				if (collectionProperty != null) {
+					tableName = collectionProperty;
+				}
+			}
+			if (primaryKey == null) {
+				for (Element<?> child : TypeUtils.getAllChildren(parameter.getType())) {
+					Value<Boolean> primaryKeyProperty = child.getProperty(PrimaryKeyProperty.getInstance());
+					if (primaryKeyProperty != null && primaryKeyProperty.getValue()) {
+						if (tableName == null) {
+							// if the input is generated and we set a collection name on the primary key, we assume it is for the table
+							// for generated inputs, we can't set properties on the root
+							Value<String> collectionProperty = child.getProperty(CollectionNameProperty.getInstance());
+							if (collectionProperty != null) {
+								tableName = uncamelify(collectionProperty.getValue());
+							}
+						}
+						primaryKey = child;
+					}
+					break;
+				}
+			}
+			
+			if (primaryKey == null) {
+				throw new ServiceException("JDBC-18", "Primary key needed to perform auto-translations");
+			}
+			Object idObject = parameter.get(primaryKey.getName());
+			if (idObject == null) {
+				throw new ServiceException("JDBC-11", "No primary key present in the input");
+			}
+			
+			String id = null;
+			// if the primary key is a uuid, it is globally unique, no additional identifier necessary
+			if (UUID.class.isAssignableFrom(((SimpleType<?>) primaryKey.getType()).getInstanceClass())) {
+				id = idObject.toString().replace("-", "");
+			}
+			// a stringified uuid
+			else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
+				id = idObject.toString().replace("-", "");
+			}
+			else if (tableName == null) {
+				tableName = statement.getMetaData().getTableName(1);
+				if (tableName == null) {
+					throw new ServiceException("JDBC-14", "Can not determine the table name for translations");
+				}
+			}
+			else {
+				id = tableName + ":" + converter.convert(idObject, String.class);
+			}
+			ids.add(id);
+		}
+		if (!ids.isEmpty()) {
+			List<Translation> translations = translator.get(connectionId, transactionId, language, ids);
+			if (translations != null && !translations.isEmpty()) {
+				// hash the translations
+				Map<String, List<Translation>> hashmap = new HashMap<String, List<Translation>>();
+				for (Translation translation : translations) {
+					if (!hashmap.containsKey(translation.getId())) {
+						hashmap.put(translation.getId(), new ArrayList<Translation>());
+					}
+					hashmap.get(translation.getId()).add(translation);
+				}
+				for (ComplexContent parameter : list) {
+					Object idObject = parameter.get(primaryKey.getName());
+					String id = null;
+					// if the primary key is a uuid, it is globally unique, no additional identifier necessary
+					if (((SimpleType<?>) primaryKey.getType()).getInstanceClass().equals(UUID.class)) {
+						id = idObject.toString().replace("-", "");
+					}
+					else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
+						id = idObject.toString().replace("-", "");
+					}
+					else {
+						id = tableName + ":" + converter.convert(idObject, String.class);
+					}
+					List<Translation> contentTranslations = hashmap.get(id);
+					if (contentTranslations != null && !contentTranslations.isEmpty()) {
+						for (Translation translation : contentTranslations) {
+							parameter.set(translation.getName(), translation.getTranslation());
+						}
+					}
 				}
 			}
 		}
