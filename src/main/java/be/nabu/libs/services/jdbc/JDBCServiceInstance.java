@@ -1101,90 +1101,92 @@ public class JDBCServiceInstance implements ServiceInstance {
 	}
 
 	private void postTranslate(String connectionId, String transactionId, String language, JDBCTranslator translator, List<ComplexContent> list, PreparedStatement statement) throws ServiceException, SQLException {
-		Element<?> primaryKey = null;
-		String tableName = null;
-		List<String> ids = new ArrayList<String>();
-		for (ComplexContent parameter : list) {
-			if (tableName == null) {
-				String collectionProperty = ValueUtils.getValue(CollectionNameProperty.getInstance(), parameter.getType().getProperties());
-				if (collectionProperty != null) {
-					tableName = collectionProperty;
-				}
-			}
-			if (primaryKey == null) {
-				for (Element<?> child : TypeUtils.getAllChildren(parameter.getType())) {
-					Value<Boolean> primaryKeyProperty = child.getProperty(PrimaryKeyProperty.getInstance());
-					if (primaryKeyProperty != null && primaryKeyProperty.getValue()) {
-						if (tableName == null) {
-							// if the input is generated and we set a collection name on the primary key, we assume it is for the table
-							// for generated inputs, we can't set properties on the root
-							Value<String> collectionProperty = child.getProperty(CollectionNameProperty.getInstance());
-							if (collectionProperty != null) {
-								tableName = uncamelify(collectionProperty.getValue());
-							}
-						}
-						primaryKey = child;
-					}
-					break;
-				}
-			}
-			
-			if (primaryKey == null) {
-				throw new ServiceException("JDBC-18", "Primary key needed to perform auto-translations");
-			}
-			Object idObject = parameter.get(primaryKey.getName());
-			if (idObject == null) {
-				throw new ServiceException("JDBC-11", "No primary key present in the input");
-			}
-			
-			String id = null;
-			// if the primary key is a uuid, it is globally unique, no additional identifier necessary
-			if (UUID.class.isAssignableFrom(((SimpleType<?>) primaryKey.getType()).getInstanceClass())) {
-				id = idObject.toString().replace("-", "");
-			}
-			// a stringified uuid
-			else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
-				id = idObject.toString().replace("-", "");
-			}
-			else if (tableName == null) {
-				tableName = statement.getMetaData().getTableName(1);
+		if (list != null && !list.isEmpty()) {
+			Element<?> primaryKey = null;
+			String tableName = null;
+			List<String> ids = new ArrayList<String>();
+			for (ComplexContent parameter : list) {
 				if (tableName == null) {
-					throw new ServiceException("JDBC-14", "Can not determine the table name for translations");
+					String collectionProperty = ValueUtils.getValue(CollectionNameProperty.getInstance(), parameter.getType().getProperties());
+					if (collectionProperty != null) {
+						tableName = collectionProperty;
+					}
 				}
-			}
-			else {
-				id = tableName + ":" + converter.convert(idObject, String.class);
-			}
-			ids.add(id);
-		}
-		if (!ids.isEmpty()) {
-			List<Translation> translations = translator.get(connectionId, transactionId, language, ids);
-			if (translations != null && !translations.isEmpty()) {
-				// hash the translations
-				Map<String, List<Translation>> hashmap = new HashMap<String, List<Translation>>();
-				for (Translation translation : translations) {
-					if (!hashmap.containsKey(translation.getId())) {
-						hashmap.put(translation.getId(), new ArrayList<Translation>());
+				if (primaryKey == null) {
+					for (Element<?> child : TypeUtils.getAllChildren(parameter.getType())) {
+						Value<Boolean> primaryKeyProperty = child.getProperty(PrimaryKeyProperty.getInstance());
+						if (primaryKeyProperty != null && primaryKeyProperty.getValue()) {
+							if (tableName == null) {
+								// if the input is generated and we set a collection name on the primary key, we assume it is for the table
+								// for generated inputs, we can't set properties on the root
+								Value<String> collectionProperty = child.getProperty(CollectionNameProperty.getInstance());
+								if (collectionProperty != null) {
+									tableName = uncamelify(collectionProperty.getValue());
+								}
+							}
+							primaryKey = child;
+						}
+						break;
 					}
-					hashmap.get(translation.getId()).add(translation);
 				}
-				for (ComplexContent parameter : list) {
-					Object idObject = parameter.get(primaryKey.getName());
-					String id = null;
-					// if the primary key is a uuid, it is globally unique, no additional identifier necessary
-					if (((SimpleType<?>) primaryKey.getType()).getInstanceClass().equals(UUID.class)) {
-						id = idObject.toString().replace("-", "");
+				
+				if (primaryKey == null) {
+					throw new ServiceException("JDBC-18", "Primary key needed to perform auto-translations");
+				}
+				Object idObject = parameter.get(primaryKey.getName());
+				if (idObject == null) {
+					throw new ServiceException("JDBC-11", "No primary key present in the input");
+				}
+				
+				String id = null;
+				// if the primary key is a uuid, it is globally unique, no additional identifier necessary
+				if (UUID.class.isAssignableFrom(((SimpleType<?>) primaryKey.getType()).getInstanceClass())) {
+					id = idObject.toString().replace("-", "");
+				}
+				// a stringified uuid
+				else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
+					id = idObject.toString().replace("-", "");
+				}
+				else if (tableName == null) {
+					tableName = statement.getMetaData().getTableName(1);
+					if (tableName == null) {
+						throw new ServiceException("JDBC-14", "Can not determine the table name for translations");
 					}
-					else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
-						id = idObject.toString().replace("-", "");
+				}
+				else {
+					id = tableName + ":" + converter.convert(idObject, String.class);
+				}
+				ids.add(id);
+			}
+			if (!ids.isEmpty()) {
+				List<Translation> translations = translator.get(connectionId, transactionId, language, ids);
+				if (translations != null && !translations.isEmpty()) {
+					// hash the translations
+					Map<String, List<Translation>> hashmap = new HashMap<String, List<Translation>>();
+					for (Translation translation : translations) {
+						if (!hashmap.containsKey(translation.getId())) {
+							hashmap.put(translation.getId(), new ArrayList<Translation>());
+						}
+						hashmap.get(translation.getId()).add(translation);
 					}
-					else {
-						id = tableName + ":" + converter.convert(idObject, String.class);
-					}
-					List<Translation> contentTranslations = hashmap.get(id);
-					if (contentTranslations != null && !contentTranslations.isEmpty()) {
-						for (Translation translation : contentTranslations) {
-							parameter.set(translation.getName(), translation.getTranslation());
+					for (ComplexContent parameter : list) {
+						Object idObject = parameter.get(primaryKey.getName());
+						String id = null;
+						// if the primary key is a uuid, it is globally unique, no additional identifier necessary
+						if (((SimpleType<?>) primaryKey.getType()).getInstanceClass().equals(UUID.class)) {
+							id = idObject.toString().replace("-", "");
+						}
+						else if (idObject instanceof String && idObject.toString().matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|[0-9a-fA-F]{32}")) {
+							id = idObject.toString().replace("-", "");
+						}
+						else {
+							id = tableName + ":" + converter.convert(idObject, String.class);
+						}
+						List<Translation> contentTranslations = hashmap.get(id);
+						if (contentTranslations != null && !contentTranslations.isEmpty()) {
+							for (Translation translation : contentTranslations) {
+								parameter.set(translation.getName(), translation.getTranslation());
+							}
 						}
 					}
 				}
