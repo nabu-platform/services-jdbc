@@ -1032,7 +1032,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 						output.set(JDBCService.TOTAL_ROW_COUNT, totalCountResultSet.getLong(1));
 					}
 					else {
-						throw new ServiceException("JDBC-17", "No results found for count");
+						// apparently when doing a wrapping count over a grouped query, it can return null results if no results are found in the inner select
+						output.set(JDBCService.TOTAL_ROW_COUNT, 0);
+//						throw new ServiceException("JDBC-17", "No results found for count");
 					}
 				}
 				else if (includeTotalCount) {
