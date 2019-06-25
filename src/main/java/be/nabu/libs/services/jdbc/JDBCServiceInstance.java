@@ -178,7 +178,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			
 			// --------------------- language handler for update ------------------------
-			Element<?> languageElement = content.getType().get("language");
+			Element<?> languageElement = content == null ? null : content.getType().get("language");
 			String language = null;
 			if (languageElement != null) {
 				language = (String) content.get("language");
