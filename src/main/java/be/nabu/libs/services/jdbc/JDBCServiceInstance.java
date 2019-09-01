@@ -150,6 +150,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		
 		List<AffixMapping> affixes = dataSourceProvider instanceof DataSourceWithAffixes ? ((DataSourceWithAffixes) dataSourceProvider).getAffixes() : null;
 
+		String originalSql = null, preparedSql = null;
 		// if it's not autocommitted, we need to check if there is already a transaction open on this resource for the given transaction id
 		Connection connection = null;
 		try {
@@ -336,7 +337,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				return output;
 			}
 			
-			String preparedSql = getDefinition().getSql();
+			preparedSql = getDefinition().getSql();
 			
 			if (preparedSql == null) {
 				throw new ServiceException("JDBC-7", "No sql found for: " + definition.getId() + ", expecting rewritten: " + definition.getSql());
@@ -344,6 +345,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 			else {
 				preparedSql = getDefinition().expandSql(preparedSql);
 			}
+			
+			originalSql = preparedSql;
 
 			// map the additional properties to a map
 			Map<String, Object> additional = new HashMap<String, Object>();
@@ -1081,6 +1084,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			while (e.getNextException() != null) {
 				e = e.getNextException();
 			}
+			logger.warn("Failed jdbc service " + definition.getId() + ", original sql: " + originalSql + ",\nfinal sql: " + preparedSql, e);
 			throw new ServiceException(e);
 		}
 		finally {

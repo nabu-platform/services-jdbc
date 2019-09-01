@@ -14,11 +14,11 @@ public class DefaultDialect implements SQLDialect {
 		return sql;
 	}
 	@Override
-	public String buildCreateSQL(ComplexType type) {
+	public String buildCreateSQL(ComplexType type, boolean compact) {
 		return null;
 	}
 	@Override
-	public String buildInsertSQL(ComplexContent values) {
+	public String buildInsertSQL(ComplexContent values, boolean compact) {
 		return null;
 	}
 }

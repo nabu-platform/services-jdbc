@@ -57,12 +57,19 @@ public interface SQLDialect {
 	/**
 	 * Build a "create table" sql statement from the given type
 	 */
-	public String buildCreateSQL(ComplexType type);
+	public default String buildCreateSQL(ComplexType type) {
+		return this.buildCreateSQL(type, false);
+	}
 	
+	public String buildCreateSQL(ComplexType type, boolean compact);
 	/**
 	 * Build an insert statement from the given values
 	 */
-	public String buildInsertSQL(ComplexContent values);
+	public default String buildInsertSQL(ComplexContent values) {
+		return this.buildInsertSQL(values, false);
+	}
+	
+	public String buildInsertSQL(ComplexContent values, boolean compact);
 	
 	/**
 	 * Not all databases support all types of objects, for example postgres might support uuid and boolean natively, oracle might not
