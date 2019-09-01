@@ -102,7 +102,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		// remove the name of the parameter
 		sql = sql.replaceFirst("^[\\w]+?\\b", "");
-		return sql.matches("(?i)^[\\s]+is[\\s]+null\\b.*") || sql.matches("(?i)^[\\s]+is[\\s]+not[\\s]+null\\b.*");
+		return sql.matches("(?is)^[\\s]+is[\\s]+null\\b.*") || sql.matches("(?is)^[\\s]+is[\\s]+not[\\s]+null\\b.*");
 	}
 	
 	@SuppressWarnings({ "unchecked", "rawtypes" })
@@ -421,14 +421,18 @@ public class JDBCServiceInstance implements ServiceInstance {
 			Map<String, Integer> sizes = new HashMap<String, Integer>(); 
 			// if the dialect does not support arrays, rewrite the statement if necessary
 			int inputIndex = 1;
+			// every time we replace something, it is no longer a variable match, we have to take this into account
+			int inputIndexOffset = 0;
+			List<String> arrayExplosions = new ArrayList<String>();
 			for (String inputName : inputNames) {
 				Element<?> element = type.get(inputName);
 				if (element != null && !dialect.hasArraySupport(element) && element.getType().isList(element.getProperties())) {
 					// if we are performing a null check, don't explode the parameter!
-					if (isNullCheck(preparedSql, inputIndex)) {
+					if (isNullCheck(preparedSql, inputIndex - inputIndexOffset)) {
 						nullCheckIndexes.add(inputIndex);
 						// we mask the input parameter because if it is used multiple times our next hit (see replace below) may accidently convert this one instead of the next one
 						preparedSql = preparedSql.replaceFirst(":" + inputName + "\\b", ">>NULL_CHECK=" + inputName + "<<");
+						inputIndexOffset++;
 					}
 					else {
 						// we need to find the largest collection in the input
@@ -465,16 +469,22 @@ public class JDBCServiceInstance implements ServiceInstance {
 							}
 							// repeat the last element a few times to get fewer "different" prepared statements
 							// prepared statements are partly nice because they are cached, generating too many different ones however will oust the old ones from the cache
-							for (int i = maxSize; i < PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+							for (int i = maxSize; i <= PREPARED_STATEMENT_ARRAY_SIZE - (maxSize % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
 								builder.append(", :").append(inputName);
 							}
-							preparedSql = preparedSql.replaceFirst(":" + inputName + "\\b", builder.toString());
+							preparedSql = preparedSql.replaceFirst(":" + inputName + "\\b", ">>ARRAY_EXPLOSION=" + arrayExplosions.size() + "<<");
+							inputIndexOffset++;
+							arrayExplosions.add(builder.toString());
 						}
 					}
 				}
 				inputIndex++;
 			}
-			
+			if (!arrayExplosions.isEmpty()) {
+				for (int i = 0; i < arrayExplosions.size(); i++) {
+					preparedSql = preparedSql.replace(">>ARRAY_EXPLOSION=" + i + "<<", arrayExplosions.get(i));
+				}
+			}
 			preparedSql = preparedSql.replaceAll(">>NULL_CHECK=([^<]+)<<", ":$1");
 			
 			preparedSql = getDefinition().getPreparedSql(dataSourceProvider.getDialect(), preparedSql);
@@ -607,8 +617,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 						debug.setInputAmount(parameters.size());
 					}
 					for (ComplexContent parameter : parameters) {
-						int index = 1;
+						int index = 1, inputNameIndex = 0;
 						for (String inputName : inputNames) {
+							inputNameIndex++;
 							Element<?> element = parameter.getType().get(inputName);
 							Object value;
 							if (element == null) {
@@ -634,10 +645,13 @@ public class JDBCServiceInstance implements ServiceInstance {
 								// if it is a null check, we want to set the size of the element, not the actual array
 								// because the target dialect does not support arrays
 								// in this case it will become something like "5 is null"
-								if (nullCheckIndexes.contains(index)) {
+								if (nullCheckIndexes.contains(inputNameIndex)) {
 									CollectionHandlerProvider provider = CollectionHandlerFactory.getInstance().getHandler().getHandler(value.getClass());
 									if (provider == null) {
 										throw new RuntimeException("Unknown collection type: " + value.getClass());
+									}
+									if (totalCountStatement != null) {
+										dialect.setObject(totalCountStatement, element, index, provider.getAsCollection(value).size(), preparedSql);
 									}
 									dialect.setObject(statement, element, index++, provider.getAsCollection(value).size(), preparedSql);
 								}
@@ -653,7 +667,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 										amount++;
 										last = single;
 									}
-									for (int i = amount; i < PREPARED_STATEMENT_ARRAY_SIZE - (amount % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
+									for (int i = amount; i <= PREPARED_STATEMENT_ARRAY_SIZE - (amount % PREPARED_STATEMENT_ARRAY_SIZE); i++) {
 										if (totalCountStatement != null) {
 											dialect.setObject(totalCountStatement, element, index, last, null);
 										}
