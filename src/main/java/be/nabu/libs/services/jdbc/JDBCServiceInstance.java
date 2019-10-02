@@ -713,6 +713,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				if (isBatch) {
 					Element<?> primaryKey = null;
 					List<Object> primaryKeys = null;
+					List<Element<?>> primaryKeyTypes = null;
 					StringBuilder selectBuilder = null;
 					Map<Object, Map<String, Object>> original = null;
 					String primaryKeyName = null;
@@ -836,12 +837,14 @@ public class JDBCServiceInstance implements ServiceInstance {
 						selectBuilder.append("select * from " + tableName + " where");
 						boolean first = true;
 						primaryKeys = new ArrayList<Object>();
+						primaryKeyTypes = new ArrayList<Element<?>>();
 						for (ComplexContent parameter : parameters) {
 							Object key = parameter.get(primaryKey.getName());
 							if (key == null) {
 								throw new ServiceException("JDBC-11", "No primary key present in the input");
 							}
 							primaryKeys.add(key);
+							primaryKeyTypes.add(parameter.getType().get(primaryKey.getName()));
 							if (first) {
 								first = false;
 							}
@@ -856,7 +859,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 							PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
 							try {
 								for (int i = 0; i < primaryKeys.size(); i++) {
-									selectAll.setObject(i + 1, primaryKeys.get(i));
+//									selectAll.setObject(i + 1, primaryKeys.get(i));
+									dialect.setObject(selectAll, primaryKeyTypes.get(i), i + 1, primaryKeys.get(i), preparedSql);
 								}
 								ResultSet executeQuery = selectAll.executeQuery();
 								original = new HashMap<Object, Map<String, Object>>();
@@ -894,7 +898,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 						PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
 						try {
 							for (int i = 0; i < primaryKeys.size(); i++) {
-								selectAll.setObject(i + 1, primaryKeys.get(i));
+//								selectAll.setObject(i + 1, primaryKeys.get(i));
+								dialect.setObject(selectAll, primaryKeyTypes.get(i), i + 1, primaryKeys.get(i), preparedSql);
 							}
 							ResultSet executeQuery = selectAll.executeQuery();
 							Map<Object, Map<String, Object>> updated = new HashMap<Object, Map<String, Object>>();
@@ -938,13 +943,18 @@ public class JDBCServiceInstance implements ServiceInstance {
 							// compare the old for updates
 							for (Object key : updated.keySet()) {
 								Map<String, Object> current = updated.get(key);
-								Map<String, Object> old = original.get(key);
-								for (String name : old.keySet()) {
-									Object currentValue = current.get(name);
-									Object oldValue = old.get(name);
-									// if it is unchanged, remove it from the new mapping
-									if (currentValue == null && oldValue == null || currentValue != null && currentValue.equals(oldValue)) {
-										current.remove(name);
+								Map<String, Object> old = original == null ? null : original.get(key);
+								if (old == null) {
+									old = new HashMap<String, Object>();
+								}
+								if (original != null) {
+									for (String name : old.keySet()) {
+										Object currentValue = current.get(name);
+										Object oldValue = old.get(name);
+										// if it is unchanged, remove it from the new mapping
+										if (currentValue == null && oldValue == null || currentValue != null && currentValue.equals(oldValue)) {
+											current.remove(name);
+										}
 									}
 								}
 								// if something was updated, add it to the diff
