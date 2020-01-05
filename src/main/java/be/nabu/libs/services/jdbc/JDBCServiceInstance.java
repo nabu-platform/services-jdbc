@@ -535,6 +535,17 @@ public class JDBCServiceInstance implements ServiceInstance {
 				boolean isFirst = true;
 				for (String orderBy : orderBys) {
 					String direction = null;
+					Boolean nullsFirst = null;
+					int nullsFirstIndex = orderBy.toLowerCase().indexOf(" nulls first");
+					if (nullsFirstIndex > 0) {
+						nullsFirst = true;
+						orderBy = orderBy.substring(0, nullsFirstIndex).trim();
+					}
+					int nullsLastIndex = orderBy.toLowerCase().indexOf(" nulls last");
+					if (nullsLastIndex > 0) {
+						nullsFirst = false;
+						orderBy = orderBy.substring(0, nullsLastIndex).trim();
+					}
 					int asc = orderBy.toLowerCase().indexOf(" asc");
 					if (asc > 0) {
 						orderBy = orderBy.substring(0, asc);
@@ -568,6 +579,14 @@ public class JDBCServiceInstance implements ServiceInstance {
 					preparedSql += orderByPosition;
 					if (direction != null) {
 						preparedSql += " " + direction;
+					}
+					if (nullsFirst != null) {
+						if (nullsFirst) {
+							preparedSql += " nulls first";
+						}
+						else {
+							preparedSql += " nulls last";
+						}
 					}
 				}
 			}
@@ -855,7 +874,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 						missing = new ArrayList<Object>(primaryKeys);
 						// if it is an insert statement, they should all be new, otherwise select them so we can track the changes
-						if (!preparedSql.trim().toLowerCase().startsWith("insert")) {
+						if (!preparedSql.trim().toLowerCase().startsWith("insert") || (originalSql.trim().toLowerCase().contains("on conflict") && originalSql.trim().toLowerCase().contains("do update"))) {
 							PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
 							try {
 								for (int i = 0; i < primaryKeys.size(); i++) {
