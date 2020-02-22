@@ -299,7 +299,8 @@ public interface SQLDialect {
 
 	public static String getDefaultTotalCountQuery(String query) {
 		// if the query is grouped, we can't do the optimized count as it will count within the grouping rules
-		if (isGrouped(query)) {
+		// unions are similarly tricky to rewrite
+		if (isGrouped(query) || isUnion(query)) {
 			return "select count(a.*) as total from (" + query + ") a";
 		}
 		// otherwise we optimize the count query which can result in drastic performance increases
@@ -447,6 +448,10 @@ public interface SQLDialect {
 			}
 		}
 		return false;
+	}
+	
+	public static boolean isUnion(String sql) {
+		return sql.matches("(?i)(?s).*\\bunion\\b.*");
 	}
 	
 	public static String getName(Value<?>...properties) {

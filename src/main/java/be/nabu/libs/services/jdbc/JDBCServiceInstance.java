@@ -1158,7 +1158,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				if (tableName == null) {
 					String collectionProperty = ValueUtils.getValue(CollectionNameProperty.getInstance(), parameter.getType().getProperties());
 					if (collectionProperty != null) {
-						tableName = collectionProperty;
+						tableName = uncamelify(collectionProperty);
 					}
 				}
 				if (primaryKey == null) {
