@@ -54,6 +54,26 @@ public interface SQLDialect {
 	 */
 	public String limit(String sql, Long offset, Integer limit);
 	
+	public default String buildDropSQL(ComplexType type, String element) {
+		return "alter table " + getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + " drop " + element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + ";";
+	}
+	
+	/**
+	 * By default we try to extract it from the create
+	 */
+	public default String buildAlterSQL(ComplexType type, String element) {
+		return "alter table " + getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + " add " + guessAlter(type, element) + ";";
+	}
+	
+	public default String guessAlter(ComplexType type, String element) {
+		String create = this.buildCreateSQL(type, false);
+		String alter = create.replaceAll("(?s)(?i).*?(\\b" + element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + "\\b[^,]+?)(?:,|[\\s]*\\);).*", "$1");
+		if (alter.equals(create)) {
+			throw new IllegalArgumentException("Could not find alter for: " + element);
+		}
+		return alter;
+	}
+	
 	/**
 	 * Build a "create table" sql statement from the given type
 	 */

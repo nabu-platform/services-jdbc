@@ -660,6 +660,10 @@ public class JDBCService implements DefinedService {
 						inherited.clear();
 					}
 					for (Element<?> child : type) {
+						// if we don't get the same child back from the top level parent, we probably restricted it at some level
+						if (!child.equals(getResults().get(child.getName()))) {
+							continue;
+						}
 						if (value != null && value) {
 							inherited.add(child);
 						}
