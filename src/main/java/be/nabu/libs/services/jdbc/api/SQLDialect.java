@@ -44,6 +44,14 @@ public interface SQLDialect {
 	}
 	
 	/**
+	 * Some databases expect the table name to always be uppercase, even if the original create was lowercase (oracle)
+	 * Some databases expect the table name to be the same as when it was created (postgresql)
+	 */
+	public default String standardizeTablePattern(String tableName) {
+		return tableName;
+	}
+	
+	/**
 	 * Rewrite an sql statement where necessary
 	 */
 	public String rewrite(String sql, ComplexType input, ComplexType output);

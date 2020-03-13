@@ -8,11 +8,13 @@ import java.util.Map;
 
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
+import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.Type;
 import be.nabu.libs.types.properties.CollectionNameProperty;
+import be.nabu.libs.types.properties.DuplicateProperty;
 import be.nabu.libs.types.properties.ForeignKeyProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.RestrictProperty;
@@ -21,7 +23,18 @@ public class JDBCUtils {
 	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, boolean isRoot, List<String> restrictions) {
 		String typeCollectionName = getTypeName(type, isRoot);
 		
-		// we start with the local children that were not restricted from above
+		// we add the fields we explicitly tagged as inherited
+		String duplicated = ValueUtils.getValue(DuplicateProperty.getInstance(), type.getProperties());
+		if (duplicated != null && !duplicated.trim().isEmpty()) {
+			for (String single : duplicated.split("[\\s]*,[\\s]*")) {
+				Element<?> child = type.get(single);
+				if (child != null) {
+					children.put(single, child);
+				}
+			}
+		}
+		
+		// we add the local children that were not restricted from above
 		for (Element<?> child : type) {
 			if (!children.containsKey(child.getName()) && !restrictions.contains(child.getName())) {
 				children.put(child.getName(), child);
@@ -72,15 +85,25 @@ public class JDBCUtils {
 			throw new IllegalStateException("Can not find the primary key in type: " + to);
 		}
 		Element<?> link = null;
+		Element<?> childPrimary = null;
 		for (Element<?> child : getFieldsInTable(from)) {
-			Value<String> property = child.getProperty(ForeignKeyProperty.getInstance());
-			if (property != null) {
-				String[] split = property.getValue().split(":");
+			Value<String> foreignKeyProperty = child.getProperty(ForeignKeyProperty.getInstance());
+			if (foreignKeyProperty != null) {
+				String[] split = foreignKeyProperty.getValue().split(":");
 				if (split[0].equals(((DefinedType) to).getId()) && (split.length == 1 || split[1].equals(primary.getName()))) {
 					link = child;
-					break;
 				}
 			}
+			Value<Boolean> primaryProperty = child.getProperty(PrimaryKeyProperty.getInstance());
+			if (primaryProperty != null && primaryProperty.getValue()) {
+				childPrimary = child;
+			}
+		}
+		// if we have no direct link but the primary of the from and the primary of the to are the _exact_ same (even in memory) item
+		// that means the child inherits it from the parent via a specific "duplicate" property
+		// at that point (partially for backwards compatibility with uml) we assume the primary keys are linked to one another (even if not explicitly with a foreign key)
+		if (link == null && childPrimary != null && childPrimary.equals(primary)) {
+			link = childPrimary;
 		}
 		if (link == null) {
 			throw new IllegalStateException("Can not find foreign key from " + from + " to " + to);
