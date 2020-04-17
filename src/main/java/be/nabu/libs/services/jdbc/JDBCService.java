@@ -62,6 +62,7 @@ import be.nabu.libs.validator.api.ValidationMessage;
  */
 public class JDBCService implements DefinedService {
 	
+
 	private String connectionId, sql;
 	
 	private Structure input, output;
@@ -76,6 +77,7 @@ public class JDBCService implements DefinedService {
 	 */
 	private String generatedColumn;
 	
+	public static final String CHANGE_TRACKER = "changeTracker";
 	public static final String CONNECTION = "connection";
 	public static final String TRANSACTION = "transaction";
 	public static final String PARAMETERS = "parameters";
@@ -126,6 +128,7 @@ public class JDBCService implements DefinedService {
 					input.add(new SimpleElementImpl<Boolean>(INCLUDE_TOTAL_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<String>(CHANGE_TRACKER, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(LAZY, wrapper.wrap(Boolean.class), input, 
 							new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), 
 							new ValueImpl<String>(CommentProperty.getInstance(), "When performing a select, the return value can be a lazy list based around a resultset.")));

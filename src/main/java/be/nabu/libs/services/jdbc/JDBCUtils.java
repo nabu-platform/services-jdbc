@@ -8,7 +8,6 @@ import java.util.Map;
 
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
-import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
@@ -28,7 +27,7 @@ public class JDBCUtils {
 		if (duplicated != null && !duplicated.trim().isEmpty()) {
 			for (String single : duplicated.split("[\\s]*,[\\s]*")) {
 				Element<?> child = type.get(single);
-				if (child != null) {
+				if (child != null && !restrictions.contains(single)) {
 					children.put(single, child);
 				}
 			}

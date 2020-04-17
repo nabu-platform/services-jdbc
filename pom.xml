@@ -46,5 +46,13 @@
 			<groupId>be.nabu.libs.types</groupId>
 			<artifactId>types-structure</artifactId>
 		</dependency>
+		<dependency>
+			<groupId>be.nabu.libs.services</groupId>
+			<artifactId>services-pojo</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>be.nabu.eai</groupId>
+			<artifactId>eai-repository</artifactId>
+		</dependency>
 	</dependencies>
 </project>

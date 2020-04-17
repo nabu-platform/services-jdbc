@@ -21,6 +21,9 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import be.nabu.eai.repository.EAIResourceRepository;
+import be.nabu.eai.repository.api.Repository;
+import be.nabu.eai.repository.util.SystemPrincipal;
 import be.nabu.libs.converter.ConverterFactory;
 import be.nabu.libs.converter.api.Converter;
 import be.nabu.libs.metrics.api.MetricInstance;
@@ -30,10 +33,12 @@ import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.ServiceRuntime;
 import be.nabu.libs.services.TransactionCloseable;
 import be.nabu.libs.services.api.ExecutionContext;
+import be.nabu.libs.services.api.Service;
 import be.nabu.libs.services.api.ServiceException;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.Transactionable;
 import be.nabu.libs.services.jdbc.api.ChangeSet;
+import be.nabu.libs.services.jdbc.api.ChangeTracker;
 import be.nabu.libs.services.jdbc.api.ChangeType;
 import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes;
 import be.nabu.libs.services.jdbc.api.DataSourceWithTranslator;
@@ -41,6 +46,7 @@ import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes.AffixMapping;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.JDBCTranslator;
 import be.nabu.libs.services.jdbc.api.JDBCTranslator.Translation;
+import be.nabu.libs.services.pojo.POJOUtils;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.BaseTypeInstance;
 import be.nabu.libs.types.CollectionHandlerFactory;
@@ -105,6 +111,17 @@ public class JDBCServiceInstance implements ServiceInstance {
 		return sql.matches("(?is)^[\\s]+is[\\s]+null\\b.*") || sql.matches("(?is)^[\\s]+is[\\s]+not[\\s]+null\\b.*");
 	}
 	
+	public static ChangeTracker getAsChangeTracker(Repository repository, String id) {
+		if (id != null && !id.trim().isEmpty()) {
+			Service changeTracker = (Service) repository.resolve(id);
+			if (changeTracker == null) {
+				throw new IllegalArgumentException("Could not find change tracker: " + id);
+			}
+			return POJOUtils.newProxy(ChangeTracker.class, repository, SystemPrincipal.ROOT, changeTracker);
+		}
+		return null;
+	}
+	
 	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Override
 	public ComplexContent execute(ExecutionContext executionContext, ComplexContent content) throws ServiceException {
@@ -120,6 +137,16 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 		}
 		MetricInstance metrics = executionContext.getMetricInstance(definition.getId());
+		
+		// if we pass in a change tracker id and trackChanges is not explicitly set, we set it explicitly
+		String changeTrackerId = content == null ? null : (String) content.get(JDBCService.CHANGE_TRACKER);
+		ChangeTracker changeTracker = null;
+		if (changeTrackerId != null) {
+			changeTracker = getAsChangeTracker(EAIResourceRepository.getInstance(), changeTrackerId);
+		}
+		if (changeTracker == null) {
+			changeTracker = definition.getChangeTracker();
+		}
 		
 		boolean trackChanges = content == null || content.get(JDBCService.TRACK_CHANGES) == null || (Boolean) content.get(JDBCService.TRACK_CHANGES);
 		boolean lazy = content != null && content.get(JDBCService.LAZY) != null && (Boolean) content.get(JDBCService.LAZY);
@@ -820,7 +847,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 							}
 						}
 					}
-					if (definition.getChangeTracker() != null && trackChanges) {
+					if (changeTracker != null && trackChanges) {
 						if (primaryKey == null) {
 							for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
 								Value<Boolean> property = element.getProperty(PrimaryKeyProperty.getInstance());
@@ -913,7 +940,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						debug.setOutputAmount(total);
 					}
 					
-					if (definition.getChangeTracker() != null && trackChanges) {
+					if (changeTracker != null && trackChanges) {
 						PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
 						try {
 							for (int i = 0; i < primaryKeys.size(); i++) {
@@ -982,7 +1009,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 								}
 							}
 							if (!changesets.isEmpty()) {
-								definition.getChangeTracker().track(connectionId, transactionId, tableName, changesets);
+								changeTracker.track(connectionId, transactionId, tableName, changesets);
 							}
 						}
 						finally {
