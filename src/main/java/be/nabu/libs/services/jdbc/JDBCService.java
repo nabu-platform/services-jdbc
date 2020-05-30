@@ -27,6 +27,7 @@ import be.nabu.libs.types.api.KeyValuePair;
 import be.nabu.libs.types.api.ModifiableComplexType;
 import be.nabu.libs.types.api.SimpleTypeWrapper;
 import be.nabu.libs.types.base.ComplexElementImpl;
+import be.nabu.libs.types.base.Scope;
 import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.java.BeanResolver;
@@ -36,6 +37,7 @@ import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
 import be.nabu.libs.types.properties.NameProperty;
+import be.nabu.libs.types.properties.ScopeProperty;
 import be.nabu.libs.types.structure.DefinedStructure;
 import be.nabu.libs.types.structure.Structure;
 import be.nabu.libs.validator.api.ValidationMessage;
@@ -120,29 +122,47 @@ public class JDBCService implements DefinedService {
 				if (input == null) {
 					Structure input = new Structure();
 					input.setName("input");
-					input.add(new SimpleElementImpl<String>(CONNECTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					input.add(new SimpleElementImpl<String>(TRANSACTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<String>(CONNECTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
+					input.add(new SimpleElementImpl<String>(TRANSACTION, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
 					input.add(new SimpleElementImpl<Long>(OFFSET, wrapper.wrap(Long.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<String>(ORDER_BY, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(INCLUDE_TOTAL_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					input.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					input.add(new SimpleElementImpl<String>(CHANGE_TRACKER, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
+					input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
+					input.add(new SimpleElementImpl<String>(CHANGE_TRACKER, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
 					input.add(new SimpleElementImpl<Boolean>(LAZY, wrapper.wrap(Boolean.class), input, 
 							new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), 
-							new ValueImpl<String>(CommentProperty.getInstance(), "When performing a select, the return value can be a lazy list based around a resultset.")));
+							new ValueImpl<String>(CommentProperty.getInstance(), "When performing a select, the return value can be a lazy list based around a resultset."),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
 					// temporarily(?) disabled because harder to do it in a table-specific way
 					// perhaps supporting only pool-based prefixes is best?
 //					input.add(new SimpleElementImpl<String>(AFFIX, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
+					input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0),
+							new ValueImpl<Integer>(MinOccursProperty.getInstance(), isParameterOptional() ? 0 : 1)));
 					// allow a list of properties
-					input.add(new ComplexElementImpl(PROPERTIES, (ComplexType) BeanResolver.getInstance().resolve(KeyValuePair.class), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new ComplexElementImpl(PROPERTIES, (ComplexType) BeanResolver.getInstance().resolve(KeyValuePair.class), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
 					this.input = input;
 				}
 			}
 		}
 		return input;
+	}
+	private boolean isParameterOptional() {
+		boolean hasMandatory = false;
+		for (Element<?> child : getParameters()) {
+			if (ValueUtils.getValue(MinOccursProperty.getInstance(), child.getProperties()) >= 1) {
+				hasMandatory = true;
+				break;
+			}
+		}
+		return !hasMandatory;
 	}
 	public ModifiableComplexType getOutput() {
 		if (output == null) {
@@ -154,7 +174,8 @@ public class JDBCService implements DefinedService {
 					output.add(new SimpleElementImpl<Long>(GENERATED_KEYS, wrapper.wrap(Long.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					output.add(new SimpleElementImpl<Long>(ROW_COUNT, wrapper.wrap(Long.class), output));
 					output.add(new SimpleElementImpl<Long>(TOTAL_ROW_COUNT, wrapper.wrap(Long.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
-					output.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					output.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), output, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
+							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
 					this.output = output;
 				}
 			}
@@ -189,9 +210,11 @@ public class JDBCService implements DefinedService {
 	public List<ValidationMessage> setSql(String sql) {
 		List<ValidationMessage> messages = new ArrayList<ValidationMessage>();
 		// if the sql is updated, we will regenerate the input
-		if (this.sql == null || !this.sql.equals(sql)) {
+		// UPDATE: always regenerate input because we want to correctly indicate whether or not the parameters are optional if you change optionality for the child elements
+		// otherwise we might not expose it correctly over REST
+//		if (this.sql == null || !this.sql.equals(sql)) {
 			messages.addAll(regenerateInterfaceFromSQL(sql));
-		}
+//		}
 		this.sql = sql;
 		return messages;
 	}
@@ -279,17 +302,8 @@ public class JDBCService implements DefinedService {
 						inputNames.add(name);
 					}
 				}
-				
-				// if there are no input parameters, set the min occurs to 0
-				if (!parameters.iterator().hasNext()) {
-					getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0));	
-				}
-				else {
-					getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MinOccursProperty.getInstance(), 1));
-				}
 			}
 		}
-		
 		boolean isSelect = sql != null && sql.trim().toLowerCase().startsWith("select");
 		boolean isUpdate = sql != null && sql.trim().toLowerCase().startsWith("update");
 		boolean isWith = sql != null && sql.trim().toLowerCase().startsWith("with");
@@ -405,6 +419,8 @@ public class JDBCService implements DefinedService {
 		if (sql != null && (sql.matches(".*\\$[\\w]+.*") || isSelect || isWith)) {
 			// set input parameters to single, can't do a batch of selects
 			getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 1));
+			// always update the minoccurs of the parameters
+			getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MinOccursProperty.getInstance(), isParameterOptional() ? 0 : 1));
 		}
 		else {
 			getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0));
@@ -483,6 +499,10 @@ public class JDBCService implements DefinedService {
 		this.parameters = parameters;
 		if (input != null) {
 			((ComplexElementImpl) input.get(PARAMETERS)).setType(getParameters());
+			// if the parameters are not a list (so a select), we may need to update the "mandatoriness" of the input depending on the new definition
+			if (ValueUtils.getValue(MaxOccursProperty.getInstance(), input.get(PARAMETERS).getProperties()) == 1) {
+				getInput().get(PARAMETERS).setProperty(new ValueImpl<Integer>(MinOccursProperty.getInstance(), isParameterOptional() ? 0 : 1));
+			}
 		}
 	}
 

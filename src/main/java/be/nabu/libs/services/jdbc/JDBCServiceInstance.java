@@ -620,7 +620,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			
 			boolean overSelected = content == null || content.get(JDBCService.HAS_NEXT) == null ? false : (Boolean) content.get(JDBCService.HAS_NEXT);
 			boolean nativeLimit = false;
-			// the limit is for selects
+			// the limit is for selects, we don't want to accidently limit ddl stuff which is also flagged as not batch
 			if (!isBatch && (offset != null || limit != null)) {
 				// we add one to the limit because we want to be able to set a boolean if there are more
 				if (limit != null && !lazy && overSelected) {
@@ -915,7 +915,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 								while (executeQuery.next()) {
 									Map<String, Object> current = new HashMap<String, Object>();
 									for (int i = 1; i <= columnCount; i++) {
-										current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+										// the column name can be uppercased
+										current.put(metaData.getColumnLabel(i).toLowerCase(), executeQuery.getObject(i));
 									}
 									original.put(current.get(primaryKeyName), current);
 								}
@@ -954,7 +955,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 							while (executeQuery.next()) {
 								Map<String, Object> current = new HashMap<String, Object>();
 								for (int i = 1; i <= columnCount; i++) {
-									current.put(metaData.getColumnLabel(i), executeQuery.getObject(i));
+									current.put(metaData.getColumnLabel(i).toLowerCase(), executeQuery.getObject(i));
 								}
 								updated.put(current.get(primaryKeyName), current);
 							}
