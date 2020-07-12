@@ -329,7 +329,9 @@ public interface SQLDialect {
 		// if the query is grouped, we can't do the optimized count as it will count within the grouping rules
 		// unions are similarly tricky to rewrite
 		if (isGrouped(query) || isUnion(query)) {
-			return "select count(a.*) as total from (" + query + ") a";
+//			return "select count(a.*) as total from (" + query + ") a";
+			// postgresq, h2 etc don't seem to mind the count(a.*) but oracle doesn't like it. there seems to be no harm in leaving it out
+			return "select count(*) as total from (" + query + ") a";
 		}
 		// otherwise we optimize the count query which can result in drastic performance increases
 		else {

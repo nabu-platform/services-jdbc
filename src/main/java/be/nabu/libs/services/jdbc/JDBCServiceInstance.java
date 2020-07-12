@@ -205,6 +205,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 				parameters = toContentCollection(object); 
 			}
 			
+			SQLDialect dialect = dataSourceProvider.getDialect();
+			if (dialect == null) {
+				dialect = new DefaultDialect();
+			}
+			
 			// --------------------- language handler for update ------------------------
 			Element<?> languageElement = content == null ? null : content.getType().get("language");
 			String language = null;
@@ -282,7 +287,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 						selectBuilder.append(primaryKeyName + " = ?");
 					}
 					Map<Object, ComplexContent> originalVersions = new HashMap<Object, ComplexContent>();
-					PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
+					// rewrite sql for escaping, ::uuid additions etc, not entirely sure if the type to rewrite is correct...
+					String selectOriginalSql = dialect.rewrite(selectBuilder.toString(), definition.getParameters(), definition.getParameters());
+					PreparedStatement selectAll = connection.prepareStatement(selectOriginalSql);
 					try {
 						int i = 1;
 						for (ComplexContent parameter : parameters) {
@@ -290,7 +297,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 							if (idObject == null) {
 								throw new ServiceException("JDBC-11", "No primary key present in the input");
 							}
-							selectAll.setObject(i++, idObject);
+							dialect.setObject(selectAll, primaryKey, i++, idObject, selectBuilder.toString());
+//							selectAll.setObject(i++, idObject);
 						}
 						ResultSet executeQuery = selectAll.executeQuery();
 						while (executeQuery.next()) {
@@ -435,12 +443,6 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			List<String> inputNames = hasNewVariables ? getDefinition().scanForPreparedVariables(preparedSql) : getDefinition().getInputNames();
 			
-			
-			SQLDialect dialect = dataSourceProvider.getDialect();
-			if (dialect == null) {
-				dialect = new DefaultDialect();
-			}
-
 			// this keeps track of the indexes where we are doing a null check (is null or is not null) on a listable object that is: not null and the dialect does not support arrays
 			// in this case we want to set something else
 			List<Integer> nullCheckIndexes = new ArrayList<Integer>();
