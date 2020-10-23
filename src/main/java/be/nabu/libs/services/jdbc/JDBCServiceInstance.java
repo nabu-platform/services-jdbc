@@ -24,6 +24,8 @@ import org.slf4j.LoggerFactory;
 import be.nabu.eai.repository.EAIResourceRepository;
 import be.nabu.eai.repository.api.Repository;
 import be.nabu.eai.repository.util.SystemPrincipal;
+import be.nabu.libs.artifacts.api.ExternalDependency;
+import be.nabu.libs.artifacts.api.ExternalDependencyArtifact;
 import be.nabu.libs.converter.ConverterFactory;
 import be.nabu.libs.converter.api.Converter;
 import be.nabu.libs.metrics.api.MetricInstance;
@@ -47,6 +49,11 @@ import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.JDBCTranslator;
 import be.nabu.libs.services.jdbc.api.JDBCTranslator.Translation;
 import be.nabu.libs.services.pojo.POJOUtils;
+import be.nabu.libs.tracer.api.DatabaseRequestTrace;
+import be.nabu.libs.tracer.api.DatabaseRequestTracer;
+import be.nabu.libs.tracer.api.Trace;
+import be.nabu.libs.tracer.api.TracerProvider;
+import be.nabu.libs.tracer.impl.TracerFactory;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.BaseTypeInstance;
 import be.nabu.libs.types.CollectionHandlerFactory;
@@ -180,6 +187,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 		String originalSql = null, preparedSql = null;
 		// if it's not autocommitted, we need to check if there is already a transaction open on this resource for the given transaction id
 		Connection connection = null;
+		List<Trace> runningTraces = new ArrayList<Trace>();
+		DatabaseRequestTracer tracer = null;
 		try {
 			if (!dataSourceProvider.isAutoCommit()) {
 				// if there is no open transaction, create one
@@ -205,10 +214,19 @@ public class JDBCServiceInstance implements ServiceInstance {
 				parameters = toContentCollection(object); 
 			}
 			
+			
 			SQLDialect dialect = dataSourceProvider.getDialect();
 			if (dialect == null) {
 				dialect = new DefaultDialect();
 			}
+			
+			TracerProvider tracerProvider = TracerFactory.getInstance().newTracerProvider();
+			ExternalDependency dependency = null;
+			if (dataSourceProvider instanceof ExternalDependencyArtifact) {
+				List<ExternalDependency> externalDependencies = ((ExternalDependencyArtifact) dataSourceProvider).getExternalDependencies();
+				dependency = externalDependencies == null || externalDependencies.isEmpty() ? null : externalDependencies.get(0);
+			}
+			tracer = tracerProvider.newDatabaseRequestTracer(dataSourceProvider.getId(), dialect.getClass().getSimpleName(), dependency == null ? null : dependency.getEndpoint());
 			
 			// --------------------- language handler for update ------------------------
 			Element<?> languageElement = content == null ? null : content.getType().get("language");
@@ -300,12 +318,22 @@ public class JDBCServiceInstance implements ServiceInstance {
 							dialect.setObject(selectAll, primaryKey, i++, idObject, selectBuilder.toString());
 //							selectAll.setObject(i++, idObject);
 						}
+						int counter = 0;
+						// we select the original values when you are updating them to see how they differ (and save the changed fields)
+						DatabaseRequestTrace trace = tracer.newTrace(definition.getId(), "translation-original-select", selectOriginalSql);
+						trace.start();
+						runningTraces.add(trace);
 						ResultSet executeQuery = selectAll.executeQuery();
 						while (executeQuery.next()) {
 							ComplexContent result = ResultSetCollectionHandler.convert(executeQuery, definition.getParameters());
 							Object idObject = result.get(primaryKey.getName());
 							originalVersions.put(idObject, result);
+							counter++;
 						}
+						trace.setRowCount(counter);
+						trace.setBatchSize(i - 1);
+						trace.stop();
+						runningTraces.remove(trace);
 					}
 					finally {
 						selectAll.close();
@@ -372,13 +400,15 @@ public class JDBCServiceInstance implements ServiceInstance {
 				return output;
 			}
 			
+			List<String> orderBys = content == null ? null : (List<String>) content.get(JDBCService.ORDER_BY);
+			
 			preparedSql = getDefinition().getSql();
 			
 			if (preparedSql == null) {
 				throw new ServiceException("JDBC-7", "No sql found for: " + definition.getId() + ", expecting rewritten: " + definition.getSql());
 			}
 			else {
-				preparedSql = getDefinition().expandSql(preparedSql);
+				preparedSql = getDefinition().expandSql(preparedSql, orderBys);
 			}
 			
 			originalSql = preparedSql;
@@ -544,11 +574,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 			
 			Long offset = content == null ? null : (Long) content.get(JDBCService.OFFSET);
 			Integer limit = content == null ? null : (Integer) content.get(JDBCService.LIMIT);
-			List<String> orderBys = content == null ? null : (List<String>) content.get(JDBCService.ORDER_BY);
 
 			// make sure we do a total count statement without limits & offsets
 			boolean includeTotalCount = content == null || content.get(JDBCService.INCLUDE_TOTAL_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_TOTAL_COUNT);
 			PreparedStatement totalCountStatement = null;
+			DatabaseRequestTrace totalCountTrace = null;
 			// if we want a total count, check if there is a limit (if not, total count == actual count)
 			// also check that it is not lazy cause we won't know the total count then even if not limited
 			if (includeTotalCount && (limit != null || lazy)) {
@@ -557,6 +587,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 					debug.setTotalCountSql(totalCountSql);
 				}
 				totalCountStatement = connection.prepareStatement(totalCountSql);
+				totalCountTrace = tracer.newTrace(definition.getId(), "total-count", totalCountSql);
 			}
 			
 			if (orderBys != null && !orderBys.isEmpty()) {
@@ -805,12 +836,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 						if (tableName == null) {
 							int position = getDefinition().getInputNames().indexOf(aggregateKey.getName());
 							if (position < 0) {
-								throw new ServiceException("JDBC-13", "Can not find the position of the collection key in the statement");
+								throw new ServiceException("JDBC-13", "Can not find the position of the aggregation key in the statement");
 							}
 							tableName = getTableName(statement, position);
 						}
 						if (tableName == null) {
-							throw new ServiceException("JDBC-14", "Can not determine the table name for the limiting");
+							throw new ServiceException("JDBC-21", "Can not determine the table name for the limiting");
 						}
 						String aggregateKeyName = uncamelify(aggregateKey.getName());
 						Map<Object, Integer> counts = new HashMap<Object, Integer>();
@@ -831,17 +862,24 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 						if (!counts.isEmpty()) {
 							for (Object key : counts.keySet()) {
-								PreparedStatement countStatement = connection.prepareStatement("select count(*) from " + tableName + " where " + aggregateKeyName + " = ?");
+								String countQuery = "select count(*) from " + tableName + " where " + aggregateKeyName + " = ?";
+								DatabaseRequestTrace countTrace = tracer.newTrace(definition.getId(), "count-query-" + tableName + "-" + aggregateKeyName, countQuery);
+								PreparedStatement countStatement = connection.prepareStatement(countQuery);
 								try {
 									countStatement.setObject(1, key);
+									countTrace.start();
+									runningTraces.add(countTrace);
 									ResultSet executeQuery = countStatement.executeQuery();
 									if (!executeQuery.next()) {
 										throw new ServiceException("JDBC-15", "Can not determine amount of elements in '" + tableName + "' for field " + aggregateKeyName + " = " + key);
 									}
 									long number = executeQuery.getLong(1);
 									if (counts.get(key) + number > limit) {
-										throw new ServiceException("JDBC-16", "Too many elements for table '" + tableName + "' field '" + aggregateKeyName + "' value '" + key + "', currently " + number + " in database and " + counts.get(key) + " would be added (> " + limit + ")");
+										throw new ServiceException("JDBC-22", "Too many elements for table '" + tableName + "' field '" + aggregateKeyName + "' value '" + key + "', currently " + number + " in database and " + counts.get(key) + " would be added (> " + limit + ")");
 									}
+									countTrace.setRowCount(1);
+									countTrace.stop();
+									runningTraces.remove(countTrace);
 								}
 								finally {
 									countStatement.close();
@@ -889,7 +927,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						for (ComplexContent parameter : parameters) {
 							Object key = parameter.get(primaryKey.getName());
 							if (key == null) {
-								throw new ServiceException("JDBC-11", "No primary key present in the input");
+								throw new ServiceException("JDBC-23", "No primary key present in the input");
 							}
 							primaryKeys.add(key);
 							primaryKeyTypes.add(parameter.getType().get(primaryKey.getName()));
@@ -904,12 +942,16 @@ public class JDBCServiceInstance implements ServiceInstance {
 						missing = new ArrayList<Object>(primaryKeys);
 						// if it is an insert statement, they should all be new, otherwise select them so we can track the changes
 						if (!preparedSql.trim().toLowerCase().startsWith("insert") || (originalSql.trim().toLowerCase().contains("on conflict") && originalSql.trim().toLowerCase().contains("do update"))) {
+							// a select to see what actually changed (in change tracking)
+							DatabaseRequestTrace selectTrace = tracer.newTrace(definition.getId(), "change-track-select-before", selectBuilder.toString());
 							PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
 							try {
 								for (int i = 0; i < primaryKeys.size(); i++) {
 //									selectAll.setObject(i + 1, primaryKeys.get(i));
 									dialect.setObject(selectAll, primaryKeyTypes.get(i), i + 1, primaryKeys.get(i), preparedSql);
 								}
+								selectTrace.start();
+								runningTraces.add(selectTrace);
 								ResultSet executeQuery = selectAll.executeQuery();
 								original = new HashMap<Object, Map<String, Object>>();
 								ResultSetMetaData metaData = executeQuery.getMetaData();
@@ -923,6 +965,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 									original.put(current.get(primaryKeyName), current);
 								}
 								missing.removeAll(original.keySet());
+								selectTrace.setRowCount(original.size());
+								selectTrace.stop();
+								runningTraces.remove(selectTrace);
 							}
 							finally {
 								selectAll.close();
@@ -930,13 +975,19 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 					}
 					
+					DatabaseRequestTrace queryTrace = tracer.newTrace(definition.getId(), "query", preparedSql);
 					MetricTimer timer = metrics == null ? null : metrics.start(METRIC_EXECUTION_TIME);
+					queryTrace.start();
+					runningTraces.add(queryTrace);
 					int[] executeBatch = batchInputAdded ? statement.executeBatch() : new int[] { statement.executeUpdate() };
 					int total = 0;
 					for (int amount : executeBatch) {
 						total += amount;
 					}
 					output.set(JDBCService.ROW_COUNT, total);
+					queryTrace.setRowCount(total);
+					queryTrace.stop();
+					runningTraces.remove(queryTrace);
 					Long executionTime = timer == null ? null : timer.stop();
 					if (debug != null) {
 						debug.setExecutionDuration(executionTime);
@@ -944,12 +995,15 @@ public class JDBCServiceInstance implements ServiceInstance {
 					}
 					
 					if (changeTracker != null && trackChanges) {
+						DatabaseRequestTrace selectTrace = tracer.newTrace(definition.getId(), "change-track-select-after", selectBuilder.toString());
 						PreparedStatement selectAll = connection.prepareStatement(selectBuilder.toString());
 						try {
 							for (int i = 0; i < primaryKeys.size(); i++) {
 //								selectAll.setObject(i + 1, primaryKeys.get(i));
 								dialect.setObject(selectAll, primaryKeyTypes.get(i), i + 1, primaryKeys.get(i), preparedSql);
 							}
+							selectTrace.start();
+							runningTraces.add(selectTrace);
 							ResultSet executeQuery = selectAll.executeQuery();
 							Map<Object, Map<String, Object>> updated = new HashMap<Object, Map<String, Object>>();
 							ResultSetMetaData metaData = executeQuery.getMetaData();
@@ -961,6 +1015,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 								}
 								updated.put(current.get(primaryKeyName), current);
 							}
+							selectTrace.setRowCount(updated.size());
+							selectTrace.stop();
+							runningTraces.remove(selectTrace);
 							List<Object> newMissing = new ArrayList<Object>(primaryKeys);
 							newMissing.removeAll(updated.keySet());
 							// don't take into account the ones that were already missing
@@ -1027,6 +1084,15 @@ public class JDBCServiceInstance implements ServiceInstance {
 					if (!nativeLimit && limit != null) {
 						statement.setMaxRows((int) (offset != null ? offset + limit : limit));
 					}
+					DatabaseRequestTrace selectTrace = tracer.newTrace(definition.getId(), "query", preparedSql);
+					selectTrace.start();
+					runningTraces.add(selectTrace);
+					if (offset != null) {
+						selectTrace.setOffset(offset);
+					}
+					if (limit != null) {
+						selectTrace.setLimit(limit);
+					}
 					ResultSet executeQuery = statement.executeQuery();
 					Long executionTime = timer == null ? null : timer.stop();
 					if (debug != null) {
@@ -1074,7 +1140,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 									result = ResultSetCollectionHandler.convert(executeQuery, resultType);
 								}
 								catch (IllegalArgumentException e) {
-									throw new ServiceException("JDBC-4", "Invalid type", e);
+									throw new ServiceException("JDBC-24", "Invalid type", e);
 								}
 								output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
 								output.set(JDBCService.HAS_NEXT, hasNext);
@@ -1094,6 +1160,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 						finally {
 							executeQuery.close();
 						}
+						selectTrace.setRowCount(index);
+						selectTrace.stop();
+						runningTraces.remove(selectTrace);
 						output.set(JDBCService.ROW_COUNT, index);
 						Long mappingTime = timer == null ? null : timer.stop();
 						if (debug != null) {
@@ -1103,15 +1172,20 @@ public class JDBCServiceInstance implements ServiceInstance {
 					}
 				}
 				if (totalCountStatement != null) {
+					totalCountTrace.start();
+					runningTraces.add(totalCountTrace);
 					ResultSet totalCountResultSet = totalCountStatement.executeQuery();
 					if (totalCountResultSet.next()) {
 						output.set(JDBCService.TOTAL_ROW_COUNT, totalCountResultSet.getLong(1));
 					}
 					else {
 						// apparently when doing a wrapping count over a grouped query, it can return null results if no results are found in the inner select
+						// so we set to 0 instead of throwing an exception (the old behavior)
 						output.set(JDBCService.TOTAL_ROW_COUNT, 0);
-//						throw new ServiceException("JDBC-17", "No results found for count");
 					}
+					totalCountTrace.setRowCount(1);
+					totalCountTrace.stop();
+					runningTraces.remove(totalCountTrace);
 				}
 				else if (includeTotalCount) {
 					output.set(JDBCService.TOTAL_ROW_COUNT, output.get(JDBCService.ROW_COUNT));
@@ -1152,12 +1226,17 @@ public class JDBCServiceInstance implements ServiceInstance {
 					totalCountStatement.close();
 				}
 			}
-		}	
+		}
 		catch (SQLException e) {
+			failTraces(runningTraces, e);
 			while (e.getNextException() != null) {
 				e = e.getNextException();
 			}
 			logger.warn("Failed jdbc service " + definition.getId() + ", original sql: " + originalSql + ",\nfinal sql: " + preparedSql, e);
+			throw new ServiceException(e);
+		}
+		catch (Exception e) {
+			failTraces(runningTraces, e);
 			throw new ServiceException(e);
 		}
 		finally {
@@ -1170,11 +1249,30 @@ public class JDBCServiceInstance implements ServiceInstance {
 					// do nothing
 				}
 			}
+			if (tracer != null) {
+				try {
+					tracer.close();
+				}
+				catch (Exception e) {
+					// do nothing
+				}
+			}
 			if (debug != null) {
 				ServiceRuntime runtime = ServiceRuntime.getRuntime();
 				if (runtime != null && runtime.getRuntimeTracker() != null) {
 					runtime.getRuntimeTracker().report(debug);
 				}
+			}
+		}
+	}
+	
+	private void failTraces(List<Trace> traces, Exception e) {
+		for (Trace trace : traces) {
+			try {
+				trace.error(null, e);
+			}
+			catch (Exception f) {
+				logger.warn("Could not stop tracer", f);
 			}
 		}
 	}

@@ -55,10 +55,22 @@ public class JDBCUtils {
 			}
 		}
 	}
-	private static String getTypeName(ComplexType type, boolean force) {
+	public static String getTypeName(ComplexType type, boolean force) {
 		String typeCollectionName = ValueUtils.getValue(CollectionNameProperty.getInstance(), type.getProperties());
 		if (force && typeCollectionName == null) {
-			typeCollectionName = type.getName().replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
+			// first we check in supertypes if we inherit a name
+			Type superType = type.getSuperType();
+			while (superType != null) {
+				typeCollectionName = ValueUtils.getValue(CollectionNameProperty.getInstance(), superType.getProperties());
+				if (typeCollectionName != null) {
+					break;
+				}
+				superType = superType.getSuperType();
+			}
+			// if we can't find one, deduce from name
+			if (typeCollectionName == null) {
+				typeCollectionName = type.getName().replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
+			}
 		}
 		return typeCollectionName;
 	}
@@ -101,7 +113,8 @@ public class JDBCUtils {
 		// if we have no direct link but the primary of the from and the primary of the to are the _exact_ same (even in memory) item
 		// that means the child inherits it from the parent via a specific "duplicate" property
 		// at that point (partially for backwards compatibility with uml) we assume the primary keys are linked to one another (even if not explicitly with a foreign key)
-		if (link == null && childPrimary != null && childPrimary.equals(primary)) {
+		// @2020-09-17: we become less strict in the exact same requirement, just having the same type and name is considered enough atm
+		if (link == null && childPrimary != null && childPrimary.getName().equals(primary.getName()) && childPrimary.getType().equals(primary.getType())) {
 			link = childPrimary;
 		}
 		if (link == null) {

@@ -12,6 +12,10 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import be.nabu.libs.artifacts.ExceptionDescriptionImpl;
+import be.nabu.libs.artifacts.api.ArtifactWithExceptions;
+import be.nabu.libs.artifacts.api.ExceptionDescription;
+import be.nabu.libs.artifacts.api.ExceptionDescription.ExceptionType;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.api.DefinedService;
@@ -31,6 +35,7 @@ import be.nabu.libs.types.base.Scope;
 import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.java.BeanResolver;
+import be.nabu.libs.types.java.BeanType;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.CommentProperty;
 import be.nabu.libs.types.properties.HiddenProperty;
@@ -62,7 +67,7 @@ import be.nabu.libs.validator.api.ValidationMessage;
  * 
  * Known issue: if you do getInput() and then setParameters(), the parameters in the original input are not updated!
  */
-public class JDBCService implements DefinedService {
+public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	
 
 	private String connectionId, sql;
@@ -615,9 +620,9 @@ public class JDBCService implements DefinedService {
 		}
 		return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
 	}
-	
+	// TODO: expand "foreign names" as new selects, you can select more than the output has defined! we can then use this to order by (must also update the orderby logic in service instance)!
 	// expand a select * into actual fields if you have a defined output
-	public String expandSql(String sql) {
+	public String expandSql(String sql, List<String> orderBys) {
 		// only expand if we did not generate the output, we must have a defined value
 		if (!this.isOutputGenerated()) {
 			String base = this.getNormalizedDepth(sql, 0);
@@ -629,6 +634,10 @@ public class JDBCService implements DefinedService {
 				while (result != null) {
 					types.add(result);
 					result = (ComplexType) result.getSuperType();
+					// if we have reached the java.lang.Object class, we stop
+					if (result instanceof BeanType && Object.class.equals(((BeanType<?>) result).getBeanClass())) {
+						break;
+					}
 				}
 				Collections.reverse(types);
 				List<Element<?>> inherited = new ArrayList<Element<?>>();
@@ -637,7 +646,7 @@ public class JDBCService implements DefinedService {
 				for (ComplexType type : types) {
 					Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
 					
-					String typeName = JDBCServiceInstance.uncamelify(getName(type.getProperties()));
+					String typeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName(type, true));
 					String bindingName = typeName;
 					
 					// find the binding name if necessary
@@ -721,5 +730,36 @@ public class JDBCService implements DefinedService {
 			value = ValueUtils.getValue(NameProperty.getInstance(), properties);
 		}
 		return value;
+	}
+
+	@Override
+	public List<ExceptionDescription> getExceptions() {
+		List<ExceptionDescription> descriptions = new ArrayList<ExceptionDescription>();
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-0", "JDBC-0", "No JDBC pool found", "Could not determine which JDBC connection to use", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-1", "JDBC-1", "Could not resolve JDBC pool", "Could not resolve the JDBC connection that should be used", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-2", "JDBC-2", "Can not find field metadata", "Could not find the metadata for the given field in either the structured input nor the key/value pairs", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-3", "JDBC-3", "Not a simple field", "The field is not a simple type", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-4", "JDBC-4", "Unknown date granularity", null, ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-5", "JDBC-5", "Service input invalid", null));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-6", "JDBC-6", "Service output invalid", null));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-7", "JDBC-7", "Could not find sql", "Could not find the sql to run", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-8", "JDBC-8", "No primary key in definition", "Could not find primary key in the definition, it is needed for automatic change tracking", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-9", "JDBC-9", "No primary key in statement", "Could not find primary key in the statement, it is needed for automatic change tracking", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-10", "JDBC-10", "Could not determine table name", "Could not find the table name in the statement needed for automatic change tracking", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-11", "JDBC-11", "Primary key empty", "The primary key field was empty, a runtime value is necessary for automatic translations"));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-12", "JDBC-12", "Could not find composite or aggregate", "Can only perform insert limitation if we have a composite or aggregate aggregation relation", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-13", "JDBC-13", "Can not find aggregation key", "Can not find the aggregation key value in the statement", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-14", "JDBC-14", "Could not determine table name", "Could not determine the table name in the statement needed for automatic translations", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-15", "JDBC-15", "Could not calculate amount of entries", "Could not calculate the amount of entries for the requested limit on aggregation", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-16", "JDBC-16", "Too many entries in input", "Too many entries in the input in accordance to the requested limit on aggregation", ExceptionType.BUSINESS));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-17", "JDBC-17", "Invalid orderBy field", "Could not find the field requested in the orderBy"));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-18", "JDBC-18", "Could not find primary key", "Could not find a primary key in the data definition, it is needed to perform automatic translations", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-19", "JDBC-19", "Can not combine automatic translation with lazy", "Can not combine lazy loading with automatic translations", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-20", "JDBC-20", "Could not find original", "Could not find the original data needed for automatic translations"));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-21", "JDBC-21", "Can not find aggregation table name", "Can not find the table name needed for automatic aggregation limitation", ExceptionType.DESIGN));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-22", "JDBC-22", "Too many entries in total", "Too many entries in accordance to the requested limit on aggregation", ExceptionType.BUSINESS));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-23", "JDBC-23", "No primary key", "Could not find primary key in the input, it is needed for automatic change tracking"));
+		descriptions.add(new ExceptionDescriptionImpl("JDBC-24", "JDBC-24", "Invalid result type", "Can not convert the result of the query to the given output type", ExceptionType.DESIGN));
+		return descriptions;
 	}
 }

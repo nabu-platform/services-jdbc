@@ -75,10 +75,35 @@ public interface SQLDialect {
 	
 	public default String guessAlter(ComplexType type, String element) {
 		String create = this.buildCreateSQL(type, false);
-		String alter = create.replaceAll("(?s)(?i).*?(\\b" + element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + "\\b[^,]+?)(?:,|[\\s]*\\);).*", "$1");
-		if (alter.equals(create)) {
+		String columnName = element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
+		String[] split = create.split("\\b" + columnName + "\\b");
+		if (split.length != 2) {
 			throw new IllegalArgumentException("Could not find alter for: " + element);
 		}
+		String alter = columnName + " " + split[1].trim();
+		int depth = 0;
+		for (int i = 0; i < alter.length(); i++) {
+			if (alter.charAt(i) == '(') {
+				depth++;
+			}
+			else if (alter.charAt(i) == ')') {
+				// the end has been reached
+				if (depth == 0) {
+					return alter.substring(0, i).trim();
+				}
+				depth--;
+			}
+			else if (alter.charAt(i) == ',') {
+				// the end has been reached
+				if (depth == 0) {
+					return alter.substring(0, i).trim();
+				}
+			}
+		}
+//		String alter = create.replaceAll("(?s)(?i).*?(\\b" + element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + "\\b[^,]+?)(?:,|[\\s]*\\);).*", "$1");
+//		if (alter.equals(create)) {
+//			throw new IllegalArgumentException("Could not find alter for: " + element);
+//		}
 		return alter;
 	}
 	
