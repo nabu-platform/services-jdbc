@@ -75,8 +75,8 @@ public interface SQLDialect {
 	
 	public default String guessAlter(ComplexType type, String element) {
 		String create = this.buildCreateSQL(type, false);
-		String columnName = element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
-		String[] split = create.split("\\b" + columnName + "\\b");
+		String columnName = element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "").toLowerCase();
+		String[] split = create.toLowerCase().split("\\b" + columnName + "\\b");
 		if (split.length != 2) {
 			throw new IllegalArgumentException("Could not find alter for: " + element);
 		}
