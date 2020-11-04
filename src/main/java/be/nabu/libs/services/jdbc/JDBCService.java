@@ -24,8 +24,10 @@ import be.nabu.libs.services.api.ServiceInterface;
 import be.nabu.libs.services.jdbc.api.ChangeTracker;
 import be.nabu.libs.services.jdbc.api.DynamicDataSourceResolver;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
+import be.nabu.libs.types.DefinedTypeResolverFactory;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
 import be.nabu.libs.types.api.ComplexType;
+import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.KeyValuePair;
 import be.nabu.libs.types.api.ModifiableComplexType;
@@ -38,6 +40,8 @@ import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.java.BeanType;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.CommentProperty;
+import be.nabu.libs.types.properties.ForeignKeyProperty;
+import be.nabu.libs.types.properties.ForeignNameProperty;
 import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
@@ -620,9 +624,11 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 		}
 		return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
 	}
+	
 	// TODO: expand "foreign names" as new selects, you can select more than the output has defined! we can then use this to order by (must also update the orderby logic in service instance)!
 	// expand a select * into actual fields if you have a defined output
 	public String expandSql(String sql, List<String> orderBys) {
+		boolean supportForeigNameExpansion = true;
 		// only expand if we did not generate the output, we must have a defined value
 		if (!this.isOutputGenerated()) {
 			String base = this.getNormalizedDepth(sql, 0);
@@ -643,6 +649,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 				List<Element<?>> inherited = new ArrayList<Element<?>>();
 				StringBuilder select = new StringBuilder();
 				String from = base.replaceAll("^select (?:distinct |)\\* from (.*?)\\b(?:where|order by|group by|limit|offset|having|window|union|except|intersect|fetch|for update|for share|$)\\b.*", "$1");
+				StringBuilder adhocBindings = new StringBuilder();
 				for (ComplexType type : types) {
 					Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
 					
@@ -696,8 +703,43 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						if (!child.equals(getResults().get(child.getName()))) {
 							continue;
 						}
+						// if it is hidden, we probably inherit it
 						if (value != null && value) {
 							inherited.add(child);
+						}
+						// if we support foreign name expansion, we need to get creative...
+						else if (supportForeigNameExpansion && child.getProperty(ForeignNameProperty.getInstance()) != null && child.getProperty(ForeignNameProperty.getInstance()).getValue() != null) {
+							String foreignName = child.getProperty(ForeignNameProperty.getInstance()).getValue();
+							String foreignNameTable = JDBCUtils.getForeignNameTable(foreignName);
+							// if it does not yet contain the binding, we add it
+							if (!adhocBindings.toString().matches(".*\\b" + foreignNameTable + "\\b.*")) {
+								String localField = foreignName.split(":")[0];
+								// we can get it from the current type (it may be restricted etc in child types)
+								Element<?> element = type.get(localField);
+								if (element == null) {
+									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not exist in this type");
+								}
+								// we expect a foreign key property on that field!
+								Value<String> foreignKey = element.getProperty(ForeignKeyProperty.getInstance());
+								if (foreignKey == null) {
+									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not have a foreign key");
+								}
+								String[] split = foreignKey.getValue().split(":");
+								if (split.length != 2) {
+									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not have a valid foreign key");
+								}
+								DefinedType resolve = DefinedTypeResolverFactory.getInstance().getResolver().resolve(split[0]);
+								if (resolve == null) {
+									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' but the foreign key type '" + split[0] + "' can not be resolved");
+								}
+								String targetTypeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName((ComplexType) resolve, true));
+								adhocBindings.append(" join " + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + bindingName + "." + JDBCServiceInstance.uncamelify(foreignName.split(":")[0]));
+							}
+							// now we just bind the value
+							if (!select.toString().isEmpty()) {
+								select.append(",\n");
+							}
+							select.append("\t" + foreignNameTable + "." + JDBCServiceInstance.uncamelify(foreignName.split(":")[1]) + " as " + JDBCServiceInstance.uncamelify(child.getName()));
 						}
 						else {
 							if (!select.toString().isEmpty()) {
@@ -707,7 +749,11 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						}
 					}
 				}
+				boolean injectAdhoc = !adhocBindings.toString().isEmpty();
+				int asteriskPosition = -1;
 				int depth = 0;
+				// we create a special version of the sql where we can do a nice regex split without coinciding with anything...
+				StringBuilder special = injectAdhoc ? new StringBuilder() : null;
 				for (int i = 0; i < sql.length(); i++) {
 					if (sql.charAt(i) == '(') {
 						depth++;
@@ -716,8 +762,24 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						depth--;
 					}
 					else if (sql.charAt(i) == '*' && depth == 0) {
-						return sql.substring(0, i) + "\n" + select.toString() + "\n" + sql.substring(i + 1);
+						asteriskPosition = i;
 					}
+					if (injectAdhoc) {
+						if (depth > 0 || (depth == 0 && sql.charAt(i) == ')')) {
+							special.append("_");
+						}
+						else {
+							special.append(sql.charAt(i));
+						}
+					}
+				}
+				if (injectAdhoc) {
+					String firstPart = special.toString().split("\\b(?:where|order by|group by|limit|offset|having|window|union|except|intersect|fetch|for update|for share|$)")[0];
+					return sql.substring(0, asteriskPosition) + "\n" + select.toString() + "\n" + sql.substring(asteriskPosition + 1, firstPart.length())
+						+ adhocBindings.toString() + " " + sql.substring(firstPart.length());
+				}
+				else {
+					return sql.substring(0, asteriskPosition) + "\n" + select.toString() + "\n" + sql.substring(asteriskPosition + 1);
 				}
 			}
 		}

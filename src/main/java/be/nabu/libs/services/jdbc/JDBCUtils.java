@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import be.nabu.eai.api.NamingConvention;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.types.api.ComplexType;
@@ -19,6 +20,22 @@ import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.RestrictProperty;
 
 public class JDBCUtils {
+	
+	// the foreign name is meant to be in this format: <foreignKeyColumn>:<foreignTableColumnName>
+	// so for example if type A has a field ownerId which points to B:id, type A also has a field "ownerName" which has foreign name "ownerId:name"
+	// this means we will bind a.owner_id to b.id and retrieve b.name to put in A.ownerName
+	public static String getForeignNameTable(String foreignName) {
+		String[] split = foreignName.split(":");
+		// foreign key join
+		// i don't want to use fk_ alone as it might coincide with other default naming
+		StringBuilder builder = new StringBuilder("fkj_");
+		// keep an eye on the max length (oracle!)
+		builder.append(NamingConvention.UNDERSCORE.apply(split[0].length() <= 20 ? split[0] : split[0].substring(0, 20)));
+		// the end result should be in the above example: "fkj_owner_id"
+		// we don't want to also include the "b.name" field in it cause you might want to inject multiple values from the same binding
+		return builder.toString();
+	}
+	
 	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, boolean isRoot, List<String> restrictions) {
 		String typeCollectionName = getTypeName(type, isRoot);
 		
