@@ -46,6 +46,7 @@ import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
 import be.nabu.libs.types.properties.NameProperty;
+import be.nabu.libs.types.properties.RestrictProperty;
 import be.nabu.libs.types.properties.ScopeProperty;
 import be.nabu.libs.types.structure.DefinedStructure;
 import be.nabu.libs.types.structure.Structure;
@@ -625,9 +626,12 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 		return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
 	}
 	
-	// TODO: expand "foreign names" as new selects, you can select more than the output has defined! we can then use this to order by (must also update the orderby logic in service instance)!
 	// expand a select * into actual fields if you have a defined output
 	public String expandSql(String sql, List<String> orderBys) {
+		// currently we only expand into the table itself
+		// this means if you have a foreign key to "user" which extends "node", you can currently only target fields in the user table, not yet in the node table
+		// this is possible but requires a lot more coding to detect in which table it is, make sure binding names reflect that (you can now use a single foreign key to bind to multiple tables, the current naming scheme is not sufficient)
+		// and make sure we resolve how the tables are bound
 		boolean supportForeigNameExpansion = true;
 		// only expand if we did not generate the output, we must have a defined value
 		if (!this.isOutputGenerated()) {
@@ -716,6 +720,17 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 								String localField = foreignName.split(":")[0];
 								// we can get it from the current type (it may be restricted etc in child types)
 								Element<?> element = type.get(localField);
+								
+								// if we can't get it from the current type and it is in the restrictions, get it from the super type
+								if (element == null && type.getSuperType() != null) {
+									String restrictValue = ValueUtils.getValue(RestrictProperty.getInstance(), type.getProperties());
+									if (restrictValue != null) {
+										if (Arrays.asList(restrictValue.split("[\\s]*,[\\s]*")).contains(localField)) {
+											element = ((ComplexType) type.getSuperType()).get(localField);
+										}
+									}
+								}
+								
 								if (element == null) {
 									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not exist in this type");
 								}
