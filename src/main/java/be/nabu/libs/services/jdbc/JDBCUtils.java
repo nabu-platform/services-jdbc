@@ -36,6 +36,59 @@ public class JDBCUtils {
 		return builder.toString();
 	}
 	
+	public static List<String> getForeignNameFields(String foreignName) {
+		return Arrays.asList(foreignName.split(":"));
+	}
+	
+	public static List<String> getForeignNameTables(String foreignName) {
+		int lastIndexOf = foreignName.lastIndexOf(':');
+		if (lastIndexOf < 0) {
+			return null;
+		}
+		String bindings = foreignName.substring(0, lastIndexOf);
+		
+		// we need to stay under 30 characters (damn you oracle)
+		// so we see how long the binding is and generate a name based on that
+		
+		String[] split = bindings.split(":");
+		List<String> tables = new ArrayList<String>();
+		// we want the first binding to be for example "fkj_owner_id", then "fkj_owne_something_else" etc etc
+		// because we want to reuse the bindings as much as possible, irrespective of how many (or how deep) the bindings are
+		// if you do another field that just uses fkj_owner_id, you want to reuse the binding, not cut it off because the initial binding was smaller
+		for (int i = 0; i < split.length; i++) {
+			// the minus i is for the underscores in between the parts
+			int maxLengthForThisPart = (int) Math.floor((30 - i - "f_".length()) / (i + 1));
+			maxLengthForThisPart -= i;
+			// at least 2 though...
+			if (maxLengthForThisPart < 2) {
+				maxLengthForThisPart = 2;
+			}
+			String name = NamingConvention.UNDERSCORE.apply(split[i]);
+			if (name.length() > maxLengthForThisPart) {
+				name = name.substring(0, maxLengthForThisPart);
+			}
+			// don't end with underscore...
+			if (name.endsWith("_")) {
+				name = name.substring(0, name.length() - 1);
+			}
+			StringBuilder builder = new StringBuilder("f");
+			for (int j = 0; j < i; j++) {
+				String partName = NamingConvention.UNDERSCORE.apply(split[j]);
+				if (partName.length() > maxLengthForThisPart) {
+					partName = partName.substring(0, maxLengthForThisPart);
+					// don't end with underscore...
+					if (partName.endsWith("_")) {
+						partName = partName.substring(0, partName.length() - 1);
+					}
+				}
+				builder.append("_" + partName);
+			}
+			builder.append("_" + name);
+			tables.add(builder.toString());
+		}
+		return tables;
+	}
+	
 	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, boolean isRoot, List<String> restrictions) {
 		String typeCollectionName = getTypeName(type, isRoot);
 		

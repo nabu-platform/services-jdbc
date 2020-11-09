@@ -715,6 +715,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						else if (supportForeigNameExpansion && child.getProperty(ForeignNameProperty.getInstance()) != null && child.getProperty(ForeignNameProperty.getInstance()).getValue() != null) {
 							String foreignName = child.getProperty(ForeignNameProperty.getInstance()).getValue();
 							String foreignNameTable = JDBCUtils.getForeignNameTable(foreignName);
+//							List<String> foreignNameTables = JDBCUtils.getForeignNameTables(foreignName);
 							// if it does not yet contain the binding, we add it
 							if (!adhocBindings.toString().matches(".*\\b" + foreignNameTable + "\\b.*")) {
 								String localField = foreignName.split(":")[0];
