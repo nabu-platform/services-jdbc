@@ -9,6 +9,7 @@ import java.util.Map;
 import be.nabu.eai.api.NamingConvention;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
+import be.nabu.libs.types.DefinedTypeResolverFactory;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
@@ -19,12 +20,66 @@ import be.nabu.libs.types.properties.ForeignKeyProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.RestrictProperty;
 
+/*
+ * Foreign names
+ * the foreign name is meant to be in this format: <foreignKeyColumn>:<foreignTableColumnName>
+ * so for example if type A has a field ownerId which points (via foreign key attribute) to B:id, type A also has a field "ownerName" which has foreign name "ownerId:name"
+ * this means we will bind a.owner_id to b.id and retrieve b.name to put in A.ownerName
+ * 
+ * For insights a new addition was added, if you have know that a particular table (structure) is in the mix (e.g. insights aggregates over a table), 
+ * you can reference fields that are _not_ in the type you are passing along as output but rather in another type.
+ * e.g. customerId:naam@example.database.main.types.customerLine
+ * Not sure if this is fully thought through, meaning, the insight will copy the collection name etc from the original core type, so it is addressing that table
+ * That allows it to use other fields from that table that are not in the select itself.
+ * However, I don't think at this point that you can reference "random" other tables, only another type that happens to already be in the join logic for other reasons? maybe even only the core table?
+ * If not already bound, there would be no join binding for that table.
+ * An alternative solution to this (can be changed later): insight can extend the core type and simply restrict everything.
+ * That way I can resolve fields through the supertype (which is stable from a table perspective) rather than having this funky logic.
+ * 
+ * 
+ * Dynamic foreign key problem
+ * ----------------------------
+ * If you reference a field that does not have a foreign key of itself, you should be able to give one along.
+ * Why? Suppose you have the task framework which has a correlationId. That correlation id does not have a foreign key, cause from the framework perspective it can be anything.
+ * At design time however you might have more information and provide "runtime" foreign keys, like workflow instance id, or node id.
+ * The way to solve this is to extend Task, add a field for example workflowId. It can have a foreign key to the workflow table.
+ * We then give the workflowId a foreignName of correlationId.
+ * 
+ * The foreign name logic will see that it has no subsequent part, so will just alias it to correlationId when selecting:
+ * select t.correlation_id as workflow_id from tasks
+ * 
+ * If we use workflowId in the foreignName of another field, like workflowStateId = workflowId:stateId
+ * Then the resolving will also see the alias and resolve it correctly.
+ * 
+ * We shouldn't allow multiple (dynamic) foreign keys to be added to correlationId because:
+ * - this makes the foreignName syntax even more complex (the foreign keys would have to be in there to be applicable at any stage)
+ * - there will be multiple bindings on the same field to different tables (correlation id to workflow it and to node id and...), so we would need to generate multiple table aliases.
+ * - you can't differentiate between left outer join and inner join (based on multiplicity), you just have to hope correlationId is optional (it usually is in this case though)
+ * 		- though it might be interesting explicitly force workflowId to be mandatory, this will force an inner join, giving you only the tasks that have a workflow attached to it...
+ * 
+ * A downside of this approach is that you do need to inject a workflowId field, this makes insights slightly harder as it can't actually have that, it would need another intermediary type.
+ * 
+ * The advantage of adding it to the foreign name however, is the ability to inject dynamic foreign keys at any path along the way.
+ * This alias approach only allows dynamic foreign keys at 1 level. If you want to dynamically resolve workflowStateId, you can't inject a foreign key at that point.
+ * 
+ * workflowState = correlationId[nabu.misc.workflow.types.WorkflowInstance:id!]:stateId[nabu.misc.workflow.types.WorkflowState:id]:name
+ * 
+ * Use the exclamation mark to indicate that it must exist?
+ * 
+ * Normally we would generate the table name based on correlationId, but another binding might add
+ * 
+ * nodeName = correlationId[nabu.cms.core.types.model.core.Node:id]:name
+ * 
+ * If we can't support this approach with proper GUI, it might not be worth the trouble. At some point it's easier to just write custom SQL...
+ */
 public class JDBCUtils {
 	
-	// the foreign name is meant to be in this format: <foreignKeyColumn>:<foreignTableColumnName>
-	// so for example if type A has a field ownerId which points to B:id, type A also has a field "ownerName" which has foreign name "ownerId:name"
-	// this means we will bind a.owner_id to b.id and retrieve b.name to put in A.ownerName
 	public static String getForeignNameTable(String foreignName) {
+		int lastIndexOf = foreignName.indexOf('@');
+		if (lastIndexOf >= 0) {
+			foreignName = foreignName.substring(0, lastIndexOf);
+		}
+		
 		String[] split = foreignName.split(":");
 		// foreign key join
 		// i don't want to use fk_ alone as it might coincide with other default naming
@@ -37,11 +92,29 @@ public class JDBCUtils {
 	}
 	
 	public static List<String> getForeignNameFields(String foreignName) {
+		int lastIndexOf = foreignName.indexOf('@');
+		if (lastIndexOf >= 0) {
+			foreignName = foreignName.substring(0, lastIndexOf);
+		}
+		
 		return Arrays.asList(foreignName.split(":"));
 	}
 	
+	public static ComplexType getForeignLookupType(String foreignName) {
+		int lastIndexOf = foreignName.indexOf('@');
+		if (lastIndexOf < 0) {
+			return null;
+		}
+		return (ComplexType) DefinedTypeResolverFactory.getInstance().getResolver().resolve(foreignName.substring(lastIndexOf + 1));
+	}
+	
 	public static List<String> getForeignNameTables(String foreignName) {
-		int lastIndexOf = foreignName.lastIndexOf(':');
+		int lastIndexOf = foreignName.indexOf('@');
+		if (lastIndexOf >= 0) {
+			foreignName = foreignName.substring(0, lastIndexOf);
+		}
+		
+		lastIndexOf = foreignName.lastIndexOf(':');
 		if (lastIndexOf < 0) {
 			return null;
 		}
@@ -151,9 +224,6 @@ public class JDBCUtils {
 	}
 	
 	public static List<String> getBinding(ComplexType from, ComplexType to) {
-		if (!(to instanceof DefinedType)) {
-			throw new IllegalStateException("Can only resolve the binding if the to type is defined");
-		}
 		Element<?> primary = null;
 		for (Element<?> child : getFieldsInTable(to)) {
 			Value<Boolean> property = child.getProperty(PrimaryKeyProperty.getInstance());
@@ -171,7 +241,7 @@ public class JDBCUtils {
 			Value<String> foreignKeyProperty = child.getProperty(ForeignKeyProperty.getInstance());
 			if (foreignKeyProperty != null) {
 				String[] split = foreignKeyProperty.getValue().split(":");
-				if (split[0].equals(((DefinedType) to).getId()) && (split.length == 1 || split[1].equals(primary.getName()))) {
+				if (to instanceof DefinedType && split[0].equals(((DefinedType) to).getId()) && (split.length == 1 || split[1].equals(primary.getName()))) {
 					link = child;
 				}
 			}

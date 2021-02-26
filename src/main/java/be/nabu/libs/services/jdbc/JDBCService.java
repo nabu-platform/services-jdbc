@@ -38,6 +38,7 @@ import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.java.BeanType;
+import be.nabu.libs.types.properties.CalculationProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.CommentProperty;
 import be.nabu.libs.types.properties.ForeignKeyProperty;
@@ -46,7 +47,6 @@ import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.MaxOccursProperty;
 import be.nabu.libs.types.properties.MinOccursProperty;
 import be.nabu.libs.types.properties.NameProperty;
-import be.nabu.libs.types.properties.RestrictProperty;
 import be.nabu.libs.types.properties.ScopeProperty;
 import be.nabu.libs.types.structure.DefinedStructure;
 import be.nabu.libs.types.structure.Structure;
@@ -153,6 +153,8 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 					// temporarily(?) disabled because harder to do it in a table-specific way
 					// perhaps supporting only pool-based prefixes is best?
 //					input.add(new SimpleElementImpl<String>(AFFIX, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new ComplexElementImpl(AFFIX, (ComplexType) BeanResolver.getInstance().resolve(AffixInput.class), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0),
+							new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new ComplexElementImpl(PARAMETERS, getParameters(), input, new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0),
 							new ValueImpl<Integer>(MinOccursProperty.getInstance(), isParameterOptional() ? 0 : 1)));
 					// allow a list of properties
@@ -518,6 +520,9 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 
 	public void setResults(ComplexType results) {
 		this.results = results;
+		if (results instanceof DefinedStructure && ((DefinedStructure) results).getId() == null) {
+			((DefinedStructure) results).setId(id + "." + RESULTS);
+		}
 		if (output != null) {
 			((ComplexElementImpl) output.get(RESULTS)).setType(getResults());
 		}
@@ -616,7 +621,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			if ('(' == sql.charAt(i)) {
 				depth++;
 			}
-			else if ('(' == sql.charAt(i)) {
+			else if (')' == sql.charAt(i)) {
 				depth--;
 			}
 			else if (depth == wantedDepth) {
@@ -624,6 +629,16 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			}
 		}
 		return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
+	}
+	
+	private String getBindingName(String fieldName, List<ComplexType> types, Map<ComplexType, String> bindingNames) {
+		for (ComplexType type : types) {
+			Element<?> element = type.get(fieldName);
+			if (element != null) {
+				return bindingNames.get(type);
+			}
+		}
+		throw new IllegalArgumentException("The field '" + fieldName + "' does not belong to any of the types in the extension hierarchy");
 	}
 	
 	// expand a select * into actual fields if you have a defined output
@@ -654,6 +669,9 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 				StringBuilder select = new StringBuilder();
 				String from = base.replaceAll("^select (?:distinct |)\\* from (.*?)\\b(?:where|order by|group by|limit|offset|having|window|union|except|intersect|fetch|for update|for share|$)\\b.*", "$1");
 				StringBuilder adhocBindings = new StringBuilder();
+				
+				Map<ComplexType, String> bindingNames = new HashMap<ComplexType, String>();
+				
 				for (ComplexType type : types) {
 					Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
 					
@@ -693,6 +711,8 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						}
 					}
 					
+					bindingNames.put(type, bindingName);
+					
 					if (!inherited.isEmpty() && (value == null || !value)) {
 						for (Element<?> child : inherited) {
 							if (!select.toString().isEmpty()) {
@@ -703,6 +723,10 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						inherited.clear();
 					}
 					for (Element<?> child : type) {
+						String calculation = ValueUtils.getValue(CalculationProperty.getInstance(), child.getProperties());
+						if (calculation != null && calculation.trim().isEmpty()) {
+							calculation = null;
+						}
 						// if we don't get the same child back from the top level parent, we probably restricted it at some level
 						if (!child.equals(getResults().get(child.getName()))) {
 							continue;
@@ -715,62 +739,92 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						else if (supportForeigNameExpansion && child.getProperty(ForeignNameProperty.getInstance()) != null && child.getProperty(ForeignNameProperty.getInstance()).getValue() != null) {
 							String foreignName = child.getProperty(ForeignNameProperty.getInstance()).getValue();
 							List<String> foreignNameTables = JDBCUtils.getForeignNameTables(foreignName);
-							List<String> foreignNameFields = JDBCUtils.getForeignNameFields(foreignName);
-							ComplexType typeToSearch = type;
-							String lastBindingName = bindingName;
-							for (int i = 0; i < foreignNameTables.size(); i++) {
-								String foreignNameTable = foreignNameTables.get(i);
-								// we always resolve the foreign keys just in case we have to bind tables further down
-								String localField = foreignNameFields.get(i);
-								// we can get it from the current type (it may be restricted etc in child types)
-								Element<?> element = typeToSearch.get(localField);
-								
-								// if we can't get it from the current type and it is in the restrictions, get it from the super type
-								if (element == null && typeToSearch.getSuperType() != null) {
-									String restrictValue = ValueUtils.getValue(RestrictProperty.getInstance(), typeToSearch.getProperties());
-									if (restrictValue != null) {
-										if (Arrays.asList(restrictValue.split("[\\s]*,[\\s]*")).contains(localField)) {
-											element = ((ComplexType) typeToSearch.getSuperType()).get(localField);
-										}
+							// if we have no tables, it might be an empty string or...you might be referring to another field in the current type!
+							// in theory we could use this to do computations like a fullName with foreign name: firstname || ' ' || lastName
+							// we can't use this for calculations atm because we do an uncamelify on the foreign name, if we made that smarter, we could do some basic calculations with this as well...
+							if (foreignNameTables == null) {
+								if (foreignName != null && !foreignName.trim().isEmpty()) {
+									if (!select.toString().isEmpty()) {
+										select.append(",\n");
 									}
+									int lastIndexOf = foreignName.lastIndexOf('@');
+									if (lastIndexOf >= 0) {
+										foreignName = foreignName.substring(0, lastIndexOf);
+									}
+									String bindingToUse = getBindingName(foreignName, types, bindingNames);
+									select.append("\t" + (calculation == null ? "" : calculation + "(") + bindingToUse + "." + JDBCServiceInstance.uncamelify(foreignName) + (calculation == null ? "" : ")") + " as " + JDBCServiceInstance.uncamelify(child.getName()));
 								}
-								
-								if (element == null) {
-									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not exist in this type: " + typeToSearch);
-								}
-								// we expect a foreign key property on that field!
-								Value<String> foreignKey = element.getProperty(ForeignKeyProperty.getInstance());
-								if (foreignKey == null) {
-									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not have a foreign key");
-								}
-								String[] split = foreignKey.getValue().split(":");
-								if (split.length != 2) {
-									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not have a valid foreign key");
-								}
-								DefinedType resolve = DefinedTypeResolverFactory.getInstance().getResolver().resolve(split[0]);
-								if (resolve == null) {
-									throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' but the foreign key type '" + split[0] + "' can not be resolved");
-								}
-								// if it does not yet contain the binding, we add it
-								if (!adhocBindings.toString().matches(".*\\b" + foreignNameTable + "\\b.*")) {
-									String targetTypeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName((ComplexType) resolve, true));
-									adhocBindings.append(" join " + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + lastBindingName + "." + JDBCServiceInstance.uncamelify(localField));
-								}
-								// we need to bind against this table!
-								lastBindingName = foreignNameTable;
-								typeToSearch = (ComplexType) resolve;
 							}
-							// now we just bind the value
-							if (!select.toString().isEmpty()) {
-								select.append(",\n");
+							else {
+								List<String> foreignNameFields = JDBCUtils.getForeignNameFields(foreignName);
+								ComplexType typeToSearch = JDBCUtils.getForeignLookupType(foreignName);
+								if (typeToSearch == null) {
+									typeToSearch = type;
+								}
+								String lastBindingName = bindingName;
+								boolean optional = false;
+								for (int i = 0; i < foreignNameTables.size(); i++) {
+									String foreignNameTable = foreignNameTables.get(i);
+									// we always resolve the foreign keys just in case we have to bind tables further down
+									String localField = foreignNameFields.get(i);
+									// we can get it from the current type (it may be restricted etc in child types)
+									Element<?> element = typeToSearch.get(localField);
+									
+									// if we are at the first of the bindings, we need to figure out which type we need
+									// for instance of B extends A and C extends B and C adds a binding based on a field in A, if we don't check it, it will attempt to bind to the field in C
+									// which doesn't exist of course
+									if (i == 0) {
+										lastBindingName = getBindingName(localField, types, bindingNames);
+									}
+									
+									if (element == null) {
+										throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not exist in this type: " + typeToSearch);
+									}
+									Value<String> elementAlias = element.getProperty(ForeignNameProperty.getInstance());
+
+									// if we have a simple alias, we need to use that!
+									// the reason for this is the dynamic foreign key problem (see JDBCUtils description)
+									if (elementAlias != null && elementAlias.getValue() != null && !elementAlias.getValue().trim().isEmpty() && !elementAlias.getValue().contains(":")) {
+										localField = elementAlias.getValue().trim();
+									}
+									
+									// we expect a foreign key property on that field!
+									Value<String> foreignKey = element.getProperty(ForeignKeyProperty.getInstance());
+									if (foreignKey == null) {
+										throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not have a foreign key");
+									}
+									String[] split = foreignKey.getValue().split(":");
+									if (split.length != 2) {
+										throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' which does not have a valid foreign key");
+									}
+									DefinedType resolve = DefinedTypeResolverFactory.getInstance().getResolver().resolve(split[0]);
+									if (resolve == null) {
+										throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' but the foreign key type '" + split[0] + "' can not be resolved");
+									}
+									// if it does not yet contain the binding, we add it
+									if (!adhocBindings.toString().matches(".*\\b" + foreignNameTable + "\\b.*")) {
+										String targetTypeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName((ComplexType) resolve, true));
+										Value<Integer> minOccurs = element.getProperty(MinOccursProperty.getInstance());
+										optional |= minOccurs != null && minOccurs.getValue() != null && minOccurs.getValue() <= 0;
+										adhocBindings.append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + lastBindingName + "." + JDBCServiceInstance.uncamelify(localField));
+									}
+									// we need to bind against this table!
+									lastBindingName = foreignNameTable;
+									typeToSearch = (ComplexType) resolve;
+								}
+								// now we just bind the value
+								if (!select.toString().isEmpty()) {
+									select.append(",\n");
+								}
+								select.append("\t" + (calculation == null ? "" : calculation + "(") + foreignNameTables.get(foreignNameTables.size() - 1) + "." + JDBCServiceInstance.uncamelify(foreignNameFields.get(foreignNameFields.size() - 1)) + (calculation == null ? "" : ")") + " as " + JDBCServiceInstance.uncamelify(child.getName()));
 							}
-							select.append("\t" + foreignNameTables.get(foreignNameTables.size() - 1) + "." + JDBCServiceInstance.uncamelify(foreignNameFields.get(foreignNameFields.size() - 1)) + " as " + JDBCServiceInstance.uncamelify(child.getName()));
 						}
 						else {
 							if (!select.toString().isEmpty()) {
 								select.append(",\n");
 							}
-							select.append("\t" + bindingName + "." + JDBCServiceInstance.uncamelify(child.getName()));
+							select.append("\t" + (calculation == null ? "" : calculation + "(") + bindingName + "." + JDBCServiceInstance.uncamelify(child.getName())
+								+ (calculation == null ? "" : ") as " + JDBCServiceInstance.uncamelify(child.getName())));
 						}
 					}
 				}
@@ -809,6 +863,24 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			}
 		}
 		return sql;
+	}
+
+	// we can get it from the current type (it may be restricted etc in child types)
+	private Element<?> getFieldFrom(ComplexType type, String field) {
+		Element<?> element = type.get(field);
+		if (element == null && type.getSuperType() != null) {
+			ComplexType superType = (ComplexType) type.getSuperType();
+			while (superType != null) {
+				element = superType.get(field);
+				if (superType.getSuperType() instanceof ComplexType) {
+					superType = (ComplexType) superType.getSuperType();
+				}
+				else {
+					break;
+				}
+			}
+		}
+		return element;
 	}
 	
 	public static String getName(Value<?>...properties) {

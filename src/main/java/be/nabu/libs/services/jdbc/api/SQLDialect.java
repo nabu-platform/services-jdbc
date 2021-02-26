@@ -4,9 +4,11 @@ import java.net.URI;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.List;
 import java.util.TimeZone;
 import java.util.UUID;
 
@@ -51,6 +53,10 @@ public interface SQLDialect {
 		return tableName;
 	}
 	
+	public default boolean supportNumericGroupBy() {
+		return false;
+	}
+	
 	/**
 	 * Rewrite an sql statement where necessary
 	 */
@@ -63,24 +69,44 @@ public interface SQLDialect {
 	public String limit(String sql, Long offset, Integer limit);
 	
 	public default String buildDropSQL(ComplexType type, String element) {
-		return "alter table " + getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + " drop " + element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + ";";
+		String name = getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
+		name = quoteReserved(name.toLowerCase());
+		return "alter table " + name + " drop " + element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + ";";
 	}
 	
 	/**
 	 * By default we try to extract it from the create
 	 */
 	public default String buildAlterSQL(ComplexType type, String element) {
-		return "alter table " + getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "") + " add " + guessAlter(type, element) + ";";
+		String name = getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
+		name = quoteReserved(name.toLowerCase());
+		return "alter table " + name + " add " + guessAlter(type, element) + ";";
+	}
+	
+	public default String buildAlterNillable(ComplexType type, String element, boolean nillable) {
+		String tableName = getName(type.getProperties()).replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "");
+		tableName = quoteReserved(tableName.toLowerCase());
+		String columnName = element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "").toLowerCase();
+		columnName = quoteReserved(columnName);
+		// this is the default syntax that works on postgres & h2 and likely some others...
+		return "alter table " + tableName + " alter " + columnName + " " + (nillable ? "drop" : "set") + " not null;";
 	}
 	
 	public default String guessAlter(ComplexType type, String element) {
 		String create = this.buildCreateSQL(type, false);
 		String columnName = element.replaceAll("([A-Z]+)", "_$1").replaceFirst("^_", "").toLowerCase();
 		String[] split = create.toLowerCase().split("\\b" + columnName + "\\b");
-		if (split.length != 2) {
-			throw new IllegalArgumentException("Could not find alter for: " + element);
+		columnName = quoteReserved(columnName);
+		// it can be greater than 2, for instance if there is a foreign key definition at the end which includes the column name
+		// in all cases, the correct name should be in split[1]
+		if (split.length < 2) {
+			throw new IllegalArgumentException("Could not find alter for '" + element + "' (" + columnName + ") in: " + create);
 		}
-		String alter = columnName + " " + split[1].trim();
+		String trimmed = split[1].trim();
+		if (trimmed.startsWith("\"")) {
+			trimmed = trimmed.substring(1).trim();
+		}
+		String alter = columnName + " " + trimmed;
 		int depth = 0;
 		for (int i = 0; i < alter.length(); i++) {
 			if (alter.charAt(i) == '(') {
@@ -104,6 +130,7 @@ public interface SQLDialect {
 //		if (alter.equals(create)) {
 //			throw new IllegalArgumentException("Could not find alter for: " + element);
 //		}
+		// don't start with a ", this means quoted strings
 		return alter;
 	}
 	
@@ -519,5 +546,18 @@ public interface SQLDialect {
 	
 	public default Integer getDefaultPort() {
 		return null;
+	}
+	
+	public default List<String> getReservedWords() {
+		return new ArrayList<String>();
+	}
+	
+	public default String quoteReserved(String name) {
+		for (String reserved : getReservedWords()) {
+			if (name.equalsIgnoreCase(reserved)) {
+				return "\"" + name + "\"";
+			}
+		}
+		return name;
 	}
 }

@@ -183,6 +183,21 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		
 		List<AffixMapping> affixes = dataSourceProvider instanceof DataSourceWithAffixes ? ((DataSourceWithAffixes) dataSourceProvider).getAffixes() : null;
+		
+		Object affixResult = content == null ? null : content.get(JDBCService.AFFIX);
+		if (affixResult != null) {
+			if (affixes == null) {
+				affixes = new ArrayList<AffixMapping>();
+			}
+			for (Object single : (Iterable) affixResult) { 
+				AffixInput affixInput = single instanceof AffixInput ? (AffixInput) single : TypeUtils.getAsBean((ComplexContent) single, AffixInput.class);
+				AffixMapping mapping = new AffixMapping();
+				mapping.setAffix(affixInput.getAffix());
+				mapping.setTables(affixInput.getTables());
+				mapping.setContext(definition.getId());
+				affixes.add(0, mapping);
+			}
+		}
 
 		String originalSql = null, preparedSql = null;
 		// if it's not autocommitted, we need to check if there is already a transaction open on this resource for the given transaction id
@@ -827,7 +842,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 							// with aggregation both can exist separately but if you are limiting it explicitly, we can still check the amount
 							if (aggregate != null && (aggregate.getValue().equals("composite") || aggregate.getValue().equals("aggregate"))) {
 								// if we already have an aggregate key, only overwrite it if we have a composite relation (is stricter)
-								aggregateKey = aggregateKey == null || aggregate.equals("composite") ? element : aggregateKey;
+								aggregateKey = aggregateKey == null || aggregate.getValue() == null || aggregate.getValue().equals("composite") ? element : aggregateKey;
 							}
 						}
 						if (aggregateKey == null) {
@@ -1139,7 +1154,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 								try {
 									result = ResultSetCollectionHandler.convert(executeQuery, resultType);
 								}
-								catch (IllegalArgumentException e) {
+								catch (Exception e) {
 									throw new ServiceException("JDBC-24", "Invalid type", e);
 								}
 								output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
