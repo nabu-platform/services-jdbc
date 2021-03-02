@@ -14,11 +14,14 @@ import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.Type;
+import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.DuplicateProperty;
 import be.nabu.libs.types.properties.ForeignKeyProperty;
+import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.RestrictProperty;
+import be.nabu.libs.types.structure.Structure;
 
 /*
  * Foreign names
@@ -73,6 +76,79 @@ import be.nabu.libs.types.properties.RestrictProperty;
  * If we can't support this approach with proper GUI, it might not be worth the trouble. At some point it's easier to just write custom SQL...
  */
 public class JDBCUtils {
+	
+	public static List<ComplexType> getAllTypes(ComplexType type) {
+		// we first build a list of all the types we need to add
+		List<ComplexType> typesToAdd = new ArrayList<ComplexType>();
+		// we assume our "outer" type always has its own table, if it extends other types, we need to dig deeper if parts of the values have to be stored in different tables
+		// but at the very least the local extension fields will have to be in its own table
+		typesToAdd.add(type);
+		
+		List<String> collectionNames = new ArrayList<String>();
+		// we want to add the root collection
+		String rootCollection = ValueUtils.getValue(CollectionNameProperty.getInstance(), type.getProperties());
+		if (rootCollection == null) {
+			rootCollection = NamingConvention.UNDERSCORE.apply(type.getName());
+		}
+		collectionNames.add(rootCollection);
+		
+		// we must keep a runny tally of restrictions because in an extension you can restrict something from another table
+		// if you are restricting the same table, this works because we take the most specific definition
+		// if we just keep the original type for a different table however, we lose this restriction information
+		// this is why we create ad hoc extensions to do this
+		List<String> restrictions = new ArrayList<String>();
+		// we check supertypes that have specifically named tables that have not yet been included
+		// child can use restrictions to restrict parent types, so the child is "correcter" in a given context
+		while (type.getSuperType() != null) {
+			// make sure we take into account restrictions we imposed on the supertype
+			String value = ValueUtils.getValue(RestrictProperty.getInstance(), type.getProperties());
+			if (value != null && !value.trim().isEmpty()) {
+				restrictions.addAll(Arrays.asList(value.split("[\\s]*,[\\s]*")));
+			}
+			Type superType = type.getSuperType();
+			if (superType instanceof ComplexType) {
+				String collectionName = ValueUtils.getValue(CollectionNameProperty.getInstance(), superType.getProperties());
+				// we have part of the end result that resides in a dedicated table
+				if (collectionName != null && collectionNames.indexOf(collectionName) < 0) {
+					if (restrictions.isEmpty()) {
+						typesToAdd.add((ComplexType) superType);
+					}
+					else {
+						typesToAdd.add(restrict((ComplexType) superType, restrictions));
+					}
+					collectionNames.add(collectionName);
+				}
+				type = (ComplexType) superType;
+			}
+			// if we ever extend a simple type, we stop here
+			else {
+				break;
+			}
+		}
+		return typesToAdd;
+	}
+	
+	private static ComplexType restrict(ComplexType superType, List<String> restrictions) {
+		Structure structure = new Structure();
+		structure.setProperty(superType.getProperties());
+		structure.setSuperType(superType);
+		structure.setProperty(new ValueImpl<String>(RestrictProperty.getInstance(), join(restrictions)));
+		// we add this so we can unwrap() it later
+		structure.setProperty(new ValueImpl<Boolean>(HiddenProperty.getInstance(), true));
+		return structure;
+	}
+	
+
+	private static String join(List<String> restrictions) {
+		StringBuilder builder = new StringBuilder();
+		for (String restriction : restrictions) {
+			if (!builder.toString().isEmpty()) {
+				builder.append(",");
+			}
+			builder.append(restriction);
+		}
+		return builder.toString();
+	}
 	
 	public static String getForeignNameTable(String foreignName) {
 		int lastIndexOf = foreignName.indexOf('@');
