@@ -220,7 +220,9 @@ public class JDBCUtils {
 			if (name.endsWith("_")) {
 				name = name.substring(0, name.length() - 1);
 			}
-			StringBuilder builder = new StringBuilder("f");
+			// we add the level to make sure it is unique
+			// we had an issue where the "short" version of a table further down was the same as the normal version of the initial binding...
+			StringBuilder builder = new StringBuilder("f" + i);
 			for (int j = 0; j < i; j++) {
 				String partName = NamingConvention.UNDERSCORE.apply(split[j]);
 				if (partName.length() > maxLengthForThisPart) {

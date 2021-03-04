@@ -789,8 +789,13 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 											theNames.put(allJoinedTables.get(lastBindingName).get(j), name);
 										}
 										List<ComplexType> list = new ArrayList<ComplexType>(allJoinedTables.get(lastBindingName));
-										Collections.reverse(list);
-										lastBindingName = getBindingName(localField, list, theNames);
+										// it can only go wrong if we have multiple tables bound
+										// the fact that this was not on, allowed me to find a complex problem earlier, so maybe leave it off for now?
+//										if (list.size() > 1) {
+											Collections.reverse(list);
+											// we take the previous field, not the current one
+											lastBindingName = getBindingName(localField, list, theNames);
+//										}
 									}
 									
 									if (element == null) {
