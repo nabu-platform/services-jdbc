@@ -724,6 +724,12 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 						inherited.clear();
 					}
 					Map<String, List<ComplexType>> allJoinedTables = new HashMap<String, List<ComplexType>>();
+					
+					// we keep track of which table each selected field is in as we bind it
+					// if we then need to reference it for some other binding, it is easy to figure out
+					// this was added to support more complex foreign name bindings where you add a new field that references a local field but adds a foreign key
+					Map<String, String> selectedFieldTables = new HashMap<String, String>();
+					
 					for (Element<?> child : type) {
 						String calculation = ValueUtils.getValue(CalculationProperty.getInstance(), child.getProperties());
 						if (calculation != null && calculation.trim().isEmpty()) {
@@ -822,10 +828,11 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 									if (resolve == null) {
 										throw new IllegalArgumentException("The field '" + child.getName() + "' has a foreign name linked to the field '" + localField + "' but the foreign key type '" + split[0] + "' can not be resolved");
 									}
+									// always calculate the optional correctly, otherwise when we reuse optional bindings we might not detect them as such
+									Value<Integer> minOccurs = element.getProperty(MinOccursProperty.getInstance());
+									optional |= minOccurs != null && minOccurs.getValue() != null && minOccurs.getValue() <= 0;
 									// if it does not yet contain the binding, we add it
-									if (!adhocBindings.toString().matches(".*\\b" + foreignNameTable + "\\b.*")) {
-										Value<Integer> minOccurs = element.getProperty(MinOccursProperty.getInstance());
-										optional |= minOccurs != null && minOccurs.getValue() != null && minOccurs.getValue() <= 0;
+									if (!adhocBindings.toString().matches("(?s).*\\b" + foreignNameTable + "\\b.*")) {
 										// if our target is also an extension, let's join the parents as well
 										// without digging deeper it is hard to say which tables we'll need
 										if (!allJoinedTables.containsKey(foreignNameTable)) {
@@ -836,13 +843,13 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 											String targetTypeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName(typeToJoin, true));
 											// if we are the first one, we are joined to the previous table based on the foreign name logic
 											if (j == 0) {
-												adhocBindings.append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + lastBindingName + "." + JDBCServiceInstance.uncamelify(localField));
+												adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + lastBindingName + "." + JDBCServiceInstance.uncamelify(localField));
 											}
 											// if we are the next one, we are joined to the previous one based on some binding value
 											else {
 												List<String> binding = JDBCUtils.getBinding(typeToJoin, allJoinedTables.get(foreignNameTable).get(j - 1));
 												String previousTable = foreignNameTable + (j == 1 ? "" : j - 1);
-												adhocBindings.append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + j + " on " + foreignNameTable + j + "." + JDBCServiceInstance.uncamelify(binding.get(0)) + " = " + previousTable + "." + JDBCServiceInstance.uncamelify(binding.get(1)));
+												adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + j + " on " + foreignNameTable + j + "." + JDBCServiceInstance.uncamelify(binding.get(0)) + " = " + previousTable + "." + JDBCServiceInstance.uncamelify(binding.get(1)));
 											}
 										}
 									}
@@ -887,6 +894,8 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 							}
 							select.append("\t" + (calculation == null ? "" : calculation + "(") + bindingName + "." + JDBCServiceInstance.uncamelify(child.getName())
 								+ (calculation == null ? "" : ") as " + JDBCServiceInstance.uncamelify(child.getName())));
+							
+							selectedFieldTables.put(child.getName(), bindingName);
 						}
 					}
 				}

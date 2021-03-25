@@ -5,6 +5,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
@@ -38,6 +39,9 @@ import be.nabu.libs.types.utils.DateUtils.Granularity;
 
 public interface SQLDialect {
 
+	// to be expanded upon...
+	public static List<String> sqlReservedWords = Arrays.asList("or", "and", "from", "select", "join", "on");
+	
 	/**
 	 * Whether or not the database supports arrays as inputs
 	 */

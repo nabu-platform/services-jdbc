@@ -158,7 +158,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 		boolean trackChanges = content == null || content.get(JDBCService.TRACK_CHANGES) == null || (Boolean) content.get(JDBCService.TRACK_CHANGES);
 		boolean lazy = content != null && content.get(JDBCService.LAZY) != null && (Boolean) content.get(JDBCService.LAZY);
 		
-		JDBCDebugInformation debug = executionContext.isDebug() ? new JDBCDebugInformation() : null;
+		// always report the debug information?
+		JDBCDebugInformation debug = executionContext.isDebug() || true ? new JDBCDebugInformation() : null;
 		// get the connection id, you can override this at runtime
 		String connectionId = content == null ? null : (String) content.get(JDBCService.CONNECTION);
 		if (connectionId == null) {
