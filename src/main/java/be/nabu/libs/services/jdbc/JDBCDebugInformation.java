@@ -7,7 +7,7 @@ public class JDBCDebugInformation {
 	
 	private String connectionId, transactionId, sql, totalCountSql;
 	private Integer inputAmount, outputAmount;
-	private Long executionDuration, mappingDuration;
+	private Long executionDuration, mappingDuration, totalCountDuration;
 	
 	public String getTransactionId() {
 		return transactionId;
@@ -56,5 +56,11 @@ public class JDBCDebugInformation {
 	}
 	public void setTotalCountSql(String totalCountSql) {
 		this.totalCountSql = totalCountSql;
+	}
+	public Long getTotalCountDuration() {
+		return totalCountDuration;
+	}
+	public void setTotalCountDuration(Long totalCountDuration) {
+		this.totalCountDuration = totalCountDuration;
 	}
 }

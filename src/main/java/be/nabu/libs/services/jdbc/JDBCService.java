@@ -632,6 +632,10 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	}
 	
 	private String getBindingName(String fieldName, List<ComplexType> types, Map<ComplexType, String> bindingNames) {
+		return getBindingName(fieldName, types, bindingNames, true);
+	}
+	
+	private String getBindingName(String fieldName, List<ComplexType> types, Map<ComplexType, String> bindingNames, boolean throwException) {
 		// this assumes from most super type to most extended type
 		for (ComplexType type : types) {
 			Element<?> element = type.get(fieldName);
@@ -639,7 +643,10 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 				return bindingNames.get(type);
 			}
 		}
-		throw new IllegalArgumentException("The field '" + fieldName + "' does not belong to any of the types in the extension hierarchy");
+		if (throwException) {
+			throw new IllegalArgumentException("The field '" + fieldName + "' does not belong to any of the types in the extension hierarchy");
+		}
+		return null;
 	}
 	
 	// expand a select * into actual fields if you have a defined output
@@ -672,6 +679,13 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 				StringBuilder adhocBindings = new StringBuilder();
 				
 				Map<ComplexType, String> bindingNames = new HashMap<ComplexType, String>();
+				
+				// we keep track of which table each selected field is in as we bind it
+				// if we then need to reference it for some other binding, it is easy to figure out
+				// this was added to support more complex foreign name bindings where you add a new field that references a local field but adds a foreign key
+				// TODO: currently you can only use fields that are also used in the resultset, if they are already filtered out, this won't work
+				// while this is a quick fix and should work for now, in the future we should resolve the fields against the actual types without needing to select them
+				Map<String, String> selectedFieldTables = new HashMap<String, String>();
 				
 				for (ComplexType type : types) {
 					Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
@@ -720,15 +734,16 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 								select.append(",\n");
 							}
 							select.append("\t" + bindingName + "." + JDBCServiceInstance.uncamelify(child.getName()));
+							selectedFieldTables.put(child.getName(), bindingName);
 						}
 						inherited.clear();
 					}
 					Map<String, List<ComplexType>> allJoinedTables = new HashMap<String, List<ComplexType>>();
 					
-					// we keep track of which table each selected field is in as we bind it
-					// if we then need to reference it for some other binding, it is easy to figure out
-					// this was added to support more complex foreign name bindings where you add a new field that references a local field but adds a foreign key
-					Map<String, String> selectedFieldTables = new HashMap<String, String>();
+					// if you want to import a field, assign a custom foreign key to it and reuse that imported field in a new binding
+					// we can't use the child name, because it is not linked to any actual table, we need to use the bit we put before the "as" when selecting it
+					// this hashmap keeps track of that bit so we can reuse it
+					Map<String, String> importedChildren = new HashMap<String, String>();
 					
 					for (Element<?> child : type) {
 						String calculation = ValueUtils.getValue(CalculationProperty.getInstance(), child.getProperties());
@@ -759,8 +774,17 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 									if (lastIndexOf >= 0) {
 										foreignName = foreignName.substring(0, lastIndexOf);
 									}
-									String bindingToUse = getBindingName(foreignName, types, bindingNames);
-									select.append("\t" + (calculation == null ? "" : calculation + "(") + bindingToUse + "." + JDBCServiceInstance.uncamelify(foreignName) + (calculation == null ? "" : ")") + " as " + JDBCServiceInstance.uncamelify(child.getName()));
+									// we reuse an existing one
+									if (importedChildren.containsKey(foreignName)) {
+										importedChildren.put(child.getName(), importedChildren.get(foreignName));
+										select.append("\t" + importedChildren.get(foreignName) + " as " + JDBCServiceInstance.uncamelify(child.getName()));	
+									}
+									else {
+										String bindingToUse = getBindingName(foreignName, types, bindingNames);
+										String importedBinding = (calculation == null ? "" : calculation + "(") + bindingToUse + "." + JDBCServiceInstance.uncamelify(foreignName) + (calculation == null ? "" : ")");
+										importedChildren.put(child.getName(), importedBinding);
+										select.append("\t" + importedBinding + " as " + JDBCServiceInstance.uncamelify(child.getName()));
+									}
 								}
 							}
 							else {
@@ -843,7 +867,29 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 											String targetTypeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName(typeToJoin, true));
 											// if we are the first one, we are joined to the previous table based on the foreign name logic
 											if (j == 0) {
-												adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + lastBindingName + "." + JDBCServiceInstance.uncamelify(localField));
+												// if it references an imported field, we need that, it will include both the table and field name, which is why it doesn't fit neatly as a ternary in the other case
+												if (importedChildren.containsKey(localField)) {
+													adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + importedChildren.get(localField));
+												}
+												else {
+													// if you have already selected it, it's easy 
+													String fieldBinding = selectedFieldTables.get(localField);
+													
+													// this does not work for remotely included fields? in fact this may cause problems when doing complex joins where names overlap with local names?
+													// this does not work as expected, need to dig deeper
+	//												if (fieldBinding == null) {
+	//													fieldBinding = getBindingName(localField, types, bindingNames, false);
+	//												}
+													// the original fallback before fancy custom foreign keys were added
+													if (fieldBinding == null) {
+														fieldBinding = lastBindingName;
+													}
+													
+													// the fallback to lastbinding name is how it used to work before (before fancy foreign key shizzle)
+													// just make sure it keeps working
+													// in case of weird binding choice, disable this to figure it out!
+													adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + fieldBinding + "." + JDBCServiceInstance.uncamelify(localField));
+												}
 											}
 											// if we are the next one, we are joined to the previous one based on some binding value
 											else {
@@ -885,7 +931,9 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 								if (isInRootTable && list.size() > 1) {
 									foreignTableToBind += list.size() - 1;
 								}
-								select.append("\t" + (calculation == null ? "" : calculation + "(") + foreignTableToBind + "." + JDBCServiceInstance.uncamelify(foreignFieldToBind) + (calculation == null ? "" : ")") + " as " + JDBCServiceInstance.uncamelify(child.getName()));
+								String importedBinding = (calculation == null ? "" : calculation + "(") + foreignTableToBind + "." + JDBCServiceInstance.uncamelify(foreignFieldToBind) + (calculation == null ? "" : ")");
+								importedChildren.put(child.getName(), importedBinding);
+								select.append("\t" + importedBinding + " as " + JDBCServiceInstance.uncamelify(child.getName()));
 							}
 						}
 						else {

@@ -382,6 +382,10 @@ public interface SQLDialect {
 	}
 
 	public static String getDefaultTotalCountQuery(String query) {
+		return getDefaultTotalCountQuery(query, false);
+	}
+	
+	public static String getDefaultTotalCountQuery(String query, boolean useStarCount) {
 		// if the query is grouped, we can't do the optimized count as it will count within the grouping rules
 		// unions are similarly tricky to rewrite
 		if (isGrouped(query) || isUnion(query)) {
@@ -511,7 +515,7 @@ public interface SQLDialect {
 							throw new IllegalArgumentException("Could not find a selectable field in: " + second.substring("select".length(), from));
 						}
 						selected = selected.trim();
-						builder.append("select count(").append(selected).append(") as total ").append(second.substring(from));
+						builder.append("select count(").append(useStarCount ? "*" : selected).append(") as total ").append(second.substring(from));
 					}
 				}
 			}

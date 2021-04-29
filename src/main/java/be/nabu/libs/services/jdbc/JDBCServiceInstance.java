@@ -90,6 +90,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 
 	public static final String METRIC_EXECUTION_TIME = "sqlExecutionTime";
 	public static final String METRIC_MAP_TIME = "resultsMapTime";
+	public static final String METRIC_COUNT_TIME = "totalCountExecutionTime";
 	public static final Integer PREPARED_STATEMENT_ARRAY_SIZE = Integer.parseInt(System.getProperty("be.nabu.libs.services.jdbc.preparedStatementArraySize", "10"));
 	
 	private JDBCService definition;
@@ -157,6 +158,16 @@ public class JDBCServiceInstance implements ServiceInstance {
 		
 		boolean trackChanges = content == null || content.get(JDBCService.TRACK_CHANGES) == null || (Boolean) content.get(JDBCService.TRACK_CHANGES);
 		boolean lazy = content != null && content.get(JDBCService.LAZY) != null && (Boolean) content.get(JDBCService.LAZY);
+		// for postgres (and perhaps others?) actually counting results is very time consuming
+		// we had a query on a million rows that had a cost of 450, the total count (on the id field) was 150.000 cost
+		// the total count on the * (which is _not_ expanded by default in postgres and actually faster) was 50.000 cost which is a lot better than the previous count but still massively slower than the actual query
+		// we can use the query plan to get an estimate of the amount of rows though, in some early tests we had this:
+		// a table with 4925 rows (using regular count) returned 4905 rows in an explain plan count
+		// a result set within that table yielding 218 rows (regular count) had exactly 218 rows in explain plan
+		// a table with 808593 rows, if we do an explain on it, we only get 335967 rows, even after refreshing the statistics
+		// a resultset of 10097 within that table has 9407 in explain
+		// a resultset of 153917 (which takes 5 seconds to calculate) has 63755 in explain (instantaneous)
+		boolean useQueryPlanTotalCount = true;
 		
 		// always report the debug information?
 		JDBCDebugInformation debug = executionContext.isDebug() || true ? new JDBCDebugInformation() : null;
@@ -1190,6 +1201,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				if (totalCountStatement != null) {
 					totalCountTrace.start();
 					runningTraces.add(totalCountTrace);
+					MetricTimer countTimer = metrics == null ? null : metrics.start(METRIC_COUNT_TIME);
 					ResultSet totalCountResultSet = totalCountStatement.executeQuery();
 					if (totalCountResultSet.next()) {
 						output.set(JDBCService.TOTAL_ROW_COUNT, totalCountResultSet.getLong(1));
@@ -1198,6 +1210,10 @@ public class JDBCServiceInstance implements ServiceInstance {
 						// apparently when doing a wrapping count over a grouped query, it can return null results if no results are found in the inner select
 						// so we set to 0 instead of throwing an exception (the old behavior)
 						output.set(JDBCService.TOTAL_ROW_COUNT, 0);
+					}
+					Long countTime = countTimer == null ? null : countTimer.stop();
+					if (debug != null) {
+						debug.setTotalCountDuration(countTime);
 					}
 					totalCountTrace.setRowCount(1);
 					totalCountTrace.stop();
