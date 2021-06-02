@@ -292,8 +292,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 										}
 									}
 									primaryKey = child;
+									break;
 								}
-								break;
 							}
 						}
 					}

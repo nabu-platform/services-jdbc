@@ -26,6 +26,7 @@ import be.nabu.libs.services.jdbc.api.DynamicDataSourceResolver;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
 import be.nabu.libs.types.DefinedTypeResolverFactory;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
+import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
@@ -638,6 +639,10 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	private String getBindingName(String fieldName, List<ComplexType> types, Map<ComplexType, String> bindingNames, boolean throwException) {
 		// this assumes from most super type to most extended type
 		for (ComplexType type : types) {
+			Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
+			if (value != null && value) {
+				continue;
+			}
 			Element<?> element = type.get(fieldName);
 			if (element != null) {
 				return bindingNames.get(type);
@@ -662,8 +667,8 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			// if we do a select *, we want to dynamically match the output definition
 			if (base.startsWith("select * from ") || base.startsWith("select distinct * from")) {
 				List<String> fromBlacklist = Arrays.asList(",", "left", "outer", "inner", "join", "right", "on");
-				List<ComplexType> types = new ArrayList<ComplexType>();
 				ComplexType result = getResults();
+				List<ComplexType> types = new ArrayList<ComplexType>();
 				while (result != null) {
 					types.add(result);
 					result = (ComplexType) result.getSuperType();
@@ -872,8 +877,13 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 													adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + " on " + foreignNameTable + "." + JDBCServiceInstance.uncamelify(split[1]) + " = " + importedChildren.get(localField));
 												}
 												else {
-													// if you have already selected it, it's easy 
-													String fieldBinding = selectedFieldTables.get(localField);
+													// if you join to an already selected field _and_ you are a first level join (so not a join to include extensions)
+													// you may be referencing an "aliased" field which is a custom imported foreign key set on a an alias field (e.g. locationId to be more specific than parentId with a foreign key to locations table)
+													// once you start binding extension tables, they never have any knowledge of the aliased fields
+													// and additionally naming conflicts are likely to happen, especially because you usually select the id field (adding it to the selectedFields) but it is often also the joining-point
+													// in the future we may only want to look at actually aliased fields (so basically foreign names without a foreign table -> cfr)
+													// not sure why we are looking at all selected fields.
+													String fieldBinding = foreignNameTable.startsWith("f0_") ? selectedFieldTables.get(localField) : null;
 													
 													// this does not work for remotely included fields? in fact this may cause problems when doing complex joins where names overlap with local names?
 													// this does not work as expected, need to dig deeper
@@ -896,6 +906,14 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 												List<String> binding = JDBCUtils.getBinding(typeToJoin, allJoinedTables.get(foreignNameTable).get(j - 1));
 												String previousTable = foreignNameTable + (j == 1 ? "" : j - 1);
 												adhocBindings.append("\n\t").append((!optional ? " join " : " left outer join ") + targetTypeName + " " + foreignNameTable + j + " on " + foreignNameTable + j + "." + JDBCServiceInstance.uncamelify(binding.get(0)) + " = " + previousTable + "." + JDBCServiceInstance.uncamelify(binding.get(1)));
+												// in the original query we might be referencing a field from our expanded table, for instance suppose you are referencing f0_device_id.parent_id
+												// but upon this expansion, it turns out that the parent_id is actually in one of the supertypes, e.g. device extends node, so parent_id is actually in f0_device_id1.parent_id
+												// either the calling logic must know that we numerically increment the bindings when binding supertypes
+												// or we auto-update any references to local fields in a supertype
+												// we assume at this point that the chance of accidental conflict is really small
+												for (Element<?> localChild : TypeUtils.getLocalChildren(typeToJoin)) {
+													sql = sql.replaceAll("\\b" + Pattern.quote(foreignNameTable + "." + JDBCServiceInstance.uncamelify(localChild.getName())) + "\\b", foreignNameTable + j + "." + JDBCServiceInstance.uncamelify(localChild.getName()));
+												}
 											}
 										}
 									}
