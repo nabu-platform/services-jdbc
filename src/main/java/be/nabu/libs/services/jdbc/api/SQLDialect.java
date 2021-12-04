@@ -388,7 +388,7 @@ public interface SQLDialect {
 	public static String getDefaultTotalCountQuery(String query, boolean useStarCount) {
 		// if the query is grouped, we can't do the optimized count as it will count within the grouping rules
 		// unions are similarly tricky to rewrite
-		if (isGrouped(query) || isUnion(query)) {
+		if (isGrouped(query) || isUnion(query) || isDistinct(query)) {
 //			return "select count(a.*) as total from (" + query + ") a";
 			// postgresq, h2 etc don't seem to mind the count(a.*) but oracle doesn't like it. there seems to be no harm in leaving it out
 			return "select count(*) as total from (" + query + ") a";
@@ -523,6 +523,13 @@ public interface SQLDialect {
 			return query;
 		}
 //		return "select count(a.*) as total from (" + query + ") a";
+	}
+	
+	public static boolean isDistinct(String sql) {
+		if (sql.matches("(?i)(?s)^[\\s]*select[\\s]+distinct[\\s]+.*")) {
+			return true;
+		}
+		return false;
 	}
 	
 	public static boolean isGrouped(String sql) {
