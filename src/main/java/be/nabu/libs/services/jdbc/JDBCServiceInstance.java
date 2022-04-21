@@ -216,6 +216,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 		Connection connection = null;
 		List<Trace> runningTraces = new ArrayList<Trace>();
 		DatabaseRequestTracer tracer = null;
+		
+		SQLDialect dialect = dataSourceProvider.getDialect();
+		if (dialect == null) {
+			dialect = new DefaultDialect();
+		}
 		try {
 			if (!dataSourceProvider.isAutoCommit()) {
 				// if there is no open transaction, create one
@@ -239,12 +244,6 @@ public class JDBCServiceInstance implements ServiceInstance {
 			Collection<ComplexContent> parameters = null;
 			if (object != null) {
 				parameters = toContentCollection(object); 
-			}
-			
-			
-			SQLDialect dialect = dataSourceProvider.getDialect();
-			if (dialect == null) {
-				dialect = new DefaultDialect();
 			}
 			
 			TracerProvider tracerProvider = TracerFactory.getInstance().newTracerProvider();
@@ -1261,11 +1260,24 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		catch (SQLException e) {
 			failTraces(runningTraces, e);
-			while (e.getNextException() != null) {
-				e = e.getNextException();
-			}
 			logger.warn("Failed jdbc service " + definition.getId() + ", original sql: " + originalSql + ",\nfinal sql: " + preparedSql, e);
-			throw new ServiceException(e);
+			// allow dialect to wrap the exception into something more sensible
+			Exception wrappedException = dialect.wrapException(e);
+			// if it is wrapped into a service exception, just throw that
+			if (wrappedException instanceof ServiceException) {
+				throw (ServiceException) wrappedException;
+			}
+			// if wrapped into something else, throw that
+			else if (wrappedException != null) {
+				throw new ServiceException(wrappedException);
+			}
+			// otherwise, we do the default throw
+			else {
+				while (e.getNextException() != null) {
+					e = e.getNextException();
+				}
+				throw new ServiceException(e);
+			}
 		}
 		catch (Exception e) {
 			failTraces(runningTraces, e);

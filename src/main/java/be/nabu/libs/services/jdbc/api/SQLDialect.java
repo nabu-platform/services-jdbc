@@ -575,4 +575,9 @@ public interface SQLDialect {
 		}
 		return name;
 	}
+	
+	// wrap it in something sensible if possible
+	public default Exception wrapException(SQLException e) {
+		return null;
+	}
 }
