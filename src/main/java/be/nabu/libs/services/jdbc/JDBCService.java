@@ -99,6 +99,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	public static final String OFFSET = "offset";
 	public static final String LIMIT = "limit";
 	public static final String INCLUDE_TOTAL_COUNT = "totalRowCount";
+	public static final String INCLUDE_ESTIMATE_COUNT = "estimateRowCount";
 	public static final String TRACK_CHANGES = "trackChanges";
 	public static final String LAZY = "lazy";
 	public static final String GENERATED_KEYS = "generatedKeys";
@@ -141,6 +142,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 					input.add(new SimpleElementImpl<Integer>(LIMIT, wrapper.wrap(Integer.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<String>(ORDER_BY, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(INCLUDE_TOTAL_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<Boolean>(INCLUDE_ESTIMATE_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
 							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
 					input.add(new SimpleElementImpl<Boolean>(TRACK_CHANGES, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),

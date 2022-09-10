@@ -158,16 +158,6 @@ public class JDBCServiceInstance implements ServiceInstance {
 		
 		boolean trackChanges = content == null || content.get(JDBCService.TRACK_CHANGES) == null || (Boolean) content.get(JDBCService.TRACK_CHANGES);
 		boolean lazy = content != null && content.get(JDBCService.LAZY) != null && (Boolean) content.get(JDBCService.LAZY);
-		// for postgres (and perhaps others?) actually counting results is very time consuming
-		// we had a query on a million rows that had a cost of 450, the total count (on the id field) was 150.000 cost
-		// the total count on the * (which is _not_ expanded by default in postgres and actually faster) was 50.000 cost which is a lot better than the previous count but still massively slower than the actual query
-		// we can use the query plan to get an estimate of the amount of rows though, in some early tests we had this:
-		// a table with 4925 rows (using regular count) returned 4905 rows in an explain plan count
-		// a result set within that table yielding 218 rows (regular count) had exactly 218 rows in explain plan
-		// a table with 808593 rows, if we do an explain on it, we only get 335967 rows, even after refreshing the statistics
-		// a resultset of 10097 within that table has 9407 in explain
-		// a resultset of 153917 (which takes 5 seconds to calculate) has 63755 in explain (instantaneous)
-		boolean useQueryPlanTotalCount = true;
 		
 		// always report the debug information?
 		JDBCDebugInformation debug = executionContext.isDebug() || true ? new JDBCDebugInformation() : null;
@@ -603,12 +593,34 @@ public class JDBCServiceInstance implements ServiceInstance {
 
 			// make sure we do a total count statement without limits & offsets
 			boolean includeTotalCount = content == null || content.get(JDBCService.INCLUDE_TOTAL_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_TOTAL_COUNT);
+			
+			// for postgres (and perhaps others?) actually counting results is very time consuming
+			// we had a query on a million rows that had a cost of 450, the total count (on the id field) was 150.000 cost
+			// the total count on the * (which is _not_ expanded by default in postgres and actually faster) was 50.000 cost which is a lot better than the previous count but still massively slower than the actual query
+			// we can use the query plan to get an estimate of the amount of rows though, in some early tests we had this:
+			// a table with 4925 rows (using regular count) returned 4905 rows in an explain plan count
+			// a result set within that table yielding 218 rows (regular count) had exactly 218 rows in explain plan
+			// a table with 808593 rows, if we do an explain on it, we only get 335967 rows, even after refreshing the statistics
+			// a resultset of 10097 within that table has 9407 in explain
+			// a resultset of 153917 (which takes 5 seconds to calculate) has 63755 in explain (instantaneous)
+			// in another example the actual query took 2ms and the total count took 3500ms!
+			boolean estimateTotalCount = content == null || content.get(JDBCService.INCLUDE_ESTIMATE_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_ESTIMATE_COUNT);
+			
 			PreparedStatement totalCountStatement = null;
 			DatabaseRequestTrace totalCountTrace = null;
 			// if we want a total count, check if there is a limit (if not, total count == actual count)
 			// also check that it is not lazy cause we won't know the total count then even if not limited
 			if (includeTotalCount && (limit != null || lazy)) {
 				String totalCountSql = getDefinition().getTotalCountSql(dataSourceProvider.getDialect(), preparedSql);
+				if (debug != null) {
+					debug.setTotalCountSql(totalCountSql);
+				}
+				totalCountStatement = connection.prepareStatement(totalCountSql);
+				totalCountTrace = tracer.newTrace(definition.getId(), "total-count", totalCountSql);
+			}
+			else if (estimateTotalCount && (limit != null || lazy)) {
+				String totalCountSql = dialect.getEstimateTotalCountQuery(preparedSql);
+//				String totalCountSql = dialect.getTotalCountQuery(preparedSql);
 				if (debug != null) {
 					debug.setTotalCountSql(totalCountSql);
 				}
@@ -1203,7 +1215,13 @@ public class JDBCServiceInstance implements ServiceInstance {
 					MetricTimer countTimer = metrics == null ? null : metrics.start(METRIC_COUNT_TIME);
 					ResultSet totalCountResultSet = totalCountStatement.executeQuery();
 					if (totalCountResultSet.next()) {
-						output.set(JDBCService.TOTAL_ROW_COUNT, totalCountResultSet.getLong(1));
+						// if we estimate, we get the explain string
+						if (!includeTotalCount && estimateTotalCount) {
+							output.set(JDBCService.TOTAL_ROW_COUNT, dialect.getEstimateTotalCount(totalCountResultSet));
+						}
+						else {
+							output.set(JDBCService.TOTAL_ROW_COUNT, totalCountResultSet.getLong(1));
+						}
 					}
 					else {
 						// apparently when doing a wrapping count over a grouped query, it can return null results if no results are found in the inner select

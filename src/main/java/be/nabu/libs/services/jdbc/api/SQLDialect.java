@@ -2,6 +2,7 @@ package be.nabu.libs.services.jdbc.api;
 
 import java.net.URI;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.ArrayList;
@@ -21,6 +22,7 @@ import be.nabu.libs.converter.api.Converter;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.api.ServiceException;
+import be.nabu.libs.services.jdbc.JDBCService;
 import be.nabu.libs.types.CollectionHandlerFactory;
 import be.nabu.libs.types.api.CollectionHandlerProvider;
 import be.nabu.libs.types.api.ComplexContent;
@@ -40,7 +42,7 @@ import be.nabu.libs.types.utils.DateUtils.Granularity;
 public interface SQLDialect {
 
 	// to be expanded upon...
-	public static List<String> sqlReservedWords = Arrays.asList("or", "and", "from", "select", "join", "on");
+	public static List<String> sqlReservedWords = Arrays.asList("or", "and", "from", "select", "join", "on", "is");
 	
 	/**
 	 * Whether or not the database supports arrays as inputs
@@ -579,5 +581,15 @@ public interface SQLDialect {
 	// wrap it in something sensible if possible
 	public default Exception wrapException(SQLException e) {
 		return null;
+	}
+	
+	public default String getEstimateTotalCountQuery(String query) {
+		return "explain " + query;
+	}
+	
+	public default Long getEstimateTotalCount(ResultSet totalCount) throws SQLException {
+		String explainResult = totalCount.getString(1);
+		System.out.println("xplain result is: " + explainResult);
+		return Long.parseLong(explainResult.replaceAll(".*?rows=([0-9]+).*", "$1"));
 	}
 }
