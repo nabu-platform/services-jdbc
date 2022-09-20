@@ -24,6 +24,8 @@ import org.slf4j.LoggerFactory;
 import be.nabu.eai.repository.EAIResourceRepository;
 import be.nabu.eai.repository.api.Repository;
 import be.nabu.eai.repository.util.SystemPrincipal;
+import be.nabu.libs.artifacts.api.Artifact;
+import be.nabu.libs.artifacts.api.ArtifactProxy;
 import be.nabu.libs.artifacts.api.ExternalDependency;
 import be.nabu.libs.artifacts.api.ExternalDependencyArtifact;
 import be.nabu.libs.converter.ConverterFactory;
@@ -33,6 +35,7 @@ import be.nabu.libs.metrics.api.MetricTimer;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.ServiceRuntime;
+import be.nabu.libs.services.ServiceUtils;
 import be.nabu.libs.services.TransactionCloseable;
 import be.nabu.libs.services.api.ExecutionContext;
 import be.nabu.libs.services.api.Service;
@@ -174,14 +177,23 @@ public class JDBCServiceInstance implements ServiceInstance {
 			throw new ServiceException("JDBC-0", "No JDBC pool configured");
 		}
 		String transactionId = content == null ? null : (String) content.get(JDBCService.TRANSACTION);
-		if (debug != null) {
-			debug.setConnectionId(connectionId);
-			debug.setTransactionId(transactionId);
-		}
 		// get the pool, we need to know if it's transactional
 		DataSourceWithDialectProviderArtifact dataSourceProvider = executionContext.getServiceContext().getResolver(DataSourceWithDialectProviderArtifact.class).resolve(connectionId);
 		if (dataSourceProvider == null) {
 			throw new ServiceException("JDBC-1", "Can not find datasource provider: " + connectionId, connectionId);
+		}
+		// if you have an EXPLICIT connection setting, we bypass the dynamic lookup but we still want to respect proxies
+		if (dataSourceProvider instanceof ArtifactProxy) {
+			Artifact proxied = ((ArtifactProxy) dataSourceProvider).getProxied();
+			if (proxied instanceof DataSourceWithDialectProviderArtifact) {
+				dataSourceProvider = (DataSourceWithDialectProviderArtifact) proxied;
+				connectionId = dataSourceProvider.getId();
+			}
+		}
+		if (debug != null) {
+			debug.setConnectionId(connectionId);
+			debug.setTransactionId(transactionId);
+			debug.setServiceContext(ServiceUtils.getServiceContext(ServiceRuntime.getRuntime()));
 		}
 		
 		List<AffixMapping> affixes = dataSourceProvider instanceof DataSourceWithAffixes ? ((DataSourceWithAffixes) dataSourceProvider).getAffixes() : null;
