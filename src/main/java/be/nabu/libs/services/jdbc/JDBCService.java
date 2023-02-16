@@ -703,10 +703,13 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 					// find the binding name if necessary
 					if (value == null || !value) {
 						String[] split = from.split("\\b" + typeName + "\\b(?!\\.)", -1);
-						if (split.length > 2) {
-							throw new IllegalStateException("Can not expand select *, there are multiple bindings for table: " + typeName);
-						}
-						else if (split.length < 2) {
+						// if there are multiple, we are going to assume the first binding is the correct one!
+						// too many times we have run into the issue that we want to do additional binding and can't
+						// in the future we can make this toggleable or have some warning about it
+//						if (split.length > 2) {
+//							throw new IllegalStateException("Can not expand select *, there are multiple bindings for table: " + typeName);
+//						}
+						if (split.length < 2) {
 							throw new IllegalStateException("Can not expand select *, no binding found for table: " + typeName);
 						}
 						String possibleName = split[1].trim();
