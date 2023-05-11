@@ -42,7 +42,7 @@ import be.nabu.libs.types.utils.DateUtils.Granularity;
 public interface SQLDialect {
 
 	// to be expanded upon...
-	public static List<String> sqlReservedWords = Arrays.asList("or", "and", "from", "select", "join", "on", "is");
+	public static List<String> sqlReservedWords = Arrays.asList("or", "and", "from", "select", "join", "on", "is", "as");
 	
 	/**
 	 * Whether or not the database supports arrays as inputs

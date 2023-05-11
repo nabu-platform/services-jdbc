@@ -10,6 +10,7 @@ import be.nabu.eai.api.NamingConvention;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.types.DefinedTypeResolverFactory;
+import be.nabu.libs.types.TypeUtils;
 import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
@@ -313,6 +314,23 @@ public class JDBCUtils {
 		if (primary == null) {
 			throw new IllegalStateException("Can not find the primary key in type: " + to);
 		}
+		
+		// @2013-03-15: there are issues when one type extends the other AND it also has a foreign key to the other for different reasons
+		// a primary example of this is masterdata: you might extend masterdata but also reference it, in this case the old code would use the foreign key binding to select instead of id-based
+		// so we check if they are related to one another
+		// we also assume that "from" extends "to" and not the other way around, not sure if we want to calculate bindings in that direction
+		if (!TypeUtils.getUpcastPath(from, to).isEmpty()) {
+			// if from extends to AND it has a duplicate property for the primary key we are using primary key-based inheritance (so the keys are kept in sync)
+			// otherwise we might be using foreign key based extension at which point we want to fall back to the original logic
+			String duplicateFrom = ValueUtils.getValue(DuplicateProperty.getInstance(), from.getProperties());
+			// we have a duplicate property and it contains the primary key 
+			if (duplicateFrom != null && Arrays.asList(duplicateFrom.split("[\\s]*,[\\s]*")).indexOf(primary.getName()) >= 0) {
+				// we link from the same field to the same field
+				return Arrays.asList(primary.getName(), primary.getName());
+			}
+		}
+		
+		
 		Element<?> link = null;
 		Element<?> childPrimary = null;
 		for (Element<?> child : getFieldsInTable(from)) {
@@ -328,7 +346,7 @@ public class JDBCUtils {
 				childPrimary = child;
 			}
 		}
-		// if we have no direct link but the primary of the from and the primary of the to are the _exact_ same (even in memory) item
+		// if we have no direct link but the primary id of the from and the primary of the to are the _exact_ same (even in memory) item
 		// that means the child inherits it from the parent via a specific "duplicate" property
 		// at that point (partially for backwards compatibility with uml) we assume the primary keys are linked to one another (even if not explicitly with a foreign key)
 		// @2020-09-17: we become less strict in the exact same requirement, just having the same type and name is considered enough atm
