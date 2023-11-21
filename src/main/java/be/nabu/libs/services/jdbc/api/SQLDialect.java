@@ -1,5 +1,7 @@
 package be.nabu.libs.services.jdbc.api;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.net.URI;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -202,6 +204,12 @@ public interface SQLDialect {
 		}
 		else if (Date.class.isAssignableFrom(instanceClass)) {
 			return Types.TIMESTAMP;
+		}
+		else if (BigDecimal.class.isAssignableFrom(instanceClass)) {
+			return Types.DECIMAL;
+		}
+		else if (BigInteger.class.isAssignableFrom(instanceClass)) {
+			return Types.NUMERIC;
 		}
 		else {
 			return null;

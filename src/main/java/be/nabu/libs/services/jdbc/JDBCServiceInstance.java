@@ -18,6 +18,8 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.sql.DataSource;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -228,7 +230,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 				// if there is no open transaction, create one
 				Transactionable transactionable = executionContext.getTransactionContext().get(transactionId, connectionId);
 				if (transactionable == null) {
-					connection = dataSourceProvider.getDataSource().getConnection();
+					DataSource dataSource = dataSourceProvider.getDataSource();
+					if (dataSource == null) {
+						throw new IllegalStateException("Could not retrieve datasource for connection " + dataSourceProvider.getId() + ", it was probably not initialized correctly");
+					}
+					connection = dataSource.getConnection();
 					executionContext.getTransactionContext().add(transactionId, new ConnectionTransactionable(connectionId, connection));
 				}
 				else {
