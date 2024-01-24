@@ -33,6 +33,57 @@ public interface JDBCTranslator {
 		}
 	}
 	
+	public static class TranslationBinding {
+		// the table the translations are in (mandatory)
+		private String translationTable;
+		// the field that contains the table name of the to-be-translated term (optional)
+		private String fieldTable;
+		// the field that contains the field name of the to-be-translated term (mandatory)
+		private String fieldName;
+		// the field that contains the id of the instance we are translating (mandatory)
+		private String fieldId;
+		// the field that actually contains the translation
+		private String fieldTranslation;
+		// the field that actually contains the language
+		private String fieldLanguage;
+		public String getTranslationTable() {
+			return translationTable;
+		}
+		public void setTranslationTable(String translationTable) {
+			this.translationTable = translationTable;
+		}
+		public String getFieldTable() {
+			return fieldTable;
+		}
+		public void setFieldTable(String fieldTable) {
+			this.fieldTable = fieldTable;
+		}
+		public String getFieldName() {
+			return fieldName;
+		}
+		public void setFieldName(String fieldName) {
+			this.fieldName = fieldName;
+		}
+		public String getFieldId() {
+			return fieldId;
+		}
+		public void setFieldId(String fieldId) {
+			this.fieldId = fieldId;
+		}
+		public String getFieldTranslation() {
+			return fieldTranslation;
+		}
+		public void setFieldTranslation(String fieldTranslation) {
+			this.fieldTranslation = fieldTranslation;
+		}
+		public String getFieldLanguage() {
+			return fieldLanguage;
+		}
+		public void setFieldLanguage(String fieldLanguage) {
+			this.fieldLanguage = fieldLanguage;
+		}
+	}
+	
 	@WebResult(name = "translations")
 	public List<Translation> get(
 		@WebParam(name = "connectionId") String connectionId, 
@@ -45,4 +96,9 @@ public interface JDBCTranslator {
 		@WebParam(name = "transactionId") String transactionId, 
 		@NotNull @WebParam(name = "language") String language, 
 		@NotNull @WebParam(name = "translations") List<Translation> translations);
+	
+	// by default we don't have binding information
+	public default TranslationBinding getBinding() {
+		return null;
+	}
 }

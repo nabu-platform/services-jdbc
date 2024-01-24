@@ -53,6 +53,7 @@ import be.nabu.libs.services.jdbc.api.DataSourceWithAffixes.AffixMapping;
 import be.nabu.libs.services.jdbc.api.DataSourceWithDialectProviderArtifact;
 import be.nabu.libs.services.jdbc.api.JDBCTranslator;
 import be.nabu.libs.services.jdbc.api.JDBCTranslator.Translation;
+import be.nabu.libs.services.jdbc.api.JDBCTranslator.TranslationBinding;
 import be.nabu.libs.services.pojo.POJOUtils;
 import be.nabu.libs.tracer.api.DatabaseRequestTrace;
 import be.nabu.libs.tracer.api.DatabaseRequestTracer;
@@ -79,7 +80,9 @@ import be.nabu.libs.types.base.SimpleElementImpl;
 import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.properties.AggregateProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
+import be.nabu.libs.types.properties.ForeignNameProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
+import be.nabu.libs.types.properties.TranslatableProperty;
 import be.nabu.libs.types.resultset.ResultSetCollectionHandler;
 import be.nabu.libs.types.resultset.ResultSetWithType;
 import be.nabu.libs.validator.api.Validation;
@@ -443,6 +446,15 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			else {
 				preparedSql = getDefinition().expandSql(preparedSql, orderBys);
+			}
+			
+			boolean translatedBindings = false;
+			// once it has been expanded, check if we want to add translations based on the binding
+			if (language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null && ((DataSourceWithTranslator) dataSourceProvider).getTranslator().getBinding() != null 
+					// if there is no default language or it differs from the one you are updating, we need to put it to translations
+					&& (((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() == null || !((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage().equals(language))) {
+				preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), ((DataSourceWithTranslator) dataSourceProvider).getTranslator().getBinding(), language);
+				translatedBindings = true;
 			}
 			
 			originalSql = preparedSql;
@@ -1202,7 +1214,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 								output.set(JDBCService.HAS_NEXT, hasNext);
 							}
 							// if we have a language that differs from the default one, we need to translate the results
-							if (language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null
+							if (!translatedBindings && language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null
 								&& (((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() == null || !((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage().equals(language))) {
 								postTranslate(
 									connectionId,
@@ -1346,6 +1358,166 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 	}
 	
+	public static String rewriteTranslated(String query, ComplexType definition, TranslationBinding binding, String language) {
+		StringBuilder builder = new StringBuilder();
+		String fromString = null;
+		Integer index = null;
+		List<String> fieldSelections = new ArrayList<String>();
+		while (index == null || index >= 0) {
+			index = query.toLowerCase().indexOf("select", index == null ? -1 : index + 1);
+			if (index >= 0) {
+				String first = query.substring(0, index);
+				int depth = (first.length() - first.replace("(", "").length()) - (first.length() - first.replace(")", "").length());
+				// if we are at depth 0, we are in the core select, we want to use that for targetting the correct fields
+				if (depth == 0) {
+					String second = query.substring(index);
+					// we append the begin part, whatever it may be (e.g. a with)
+					builder.append(first);
+					String[] split2 = second.toLowerCase().split("(?s)(?i)[\\s]*\\bfrom\\b");
+					if (split2.length < 2) {
+						throw new IllegalStateException("No from found");
+					}
+					int from = split2[0].length();
+					fromString = second.substring(split2[0].length());
+					
+					String fields = second.substring("select".length(), from);
+					index = null;
+					while (index == null || index >= 0) {
+						index = fields.toLowerCase().indexOf(",", index == null ? -1 : index + 1);
+						if (index >= 0) {			
+							depth = (fields.length() - fields.replace("(", "").length()) - (fields.length() - fields.replace(")", "").length());
+							// we are not in the middle of a call like: to_date(test, 'dd/mm')
+							if (depth == 0) {
+								fieldSelections.add(fields.substring(0, index).trim());
+								fields = fields.substring(index + 1);
+								index = 0;
+							}
+						}
+						// add remainder, it is the last selection
+						else {
+							fieldSelections.add(fields.trim());
+						}
+					}
+				}
+				break;
+			}
+		}
+		String whereString = null;
+		// if we have a from string, we need to find the position of the "where"
+		if (fromString != null) {
+			index = null;
+			while (index == null || index >= 0) {
+				index = fromString.toLowerCase().indexOf("where", index == null ? -1 : index + 1);
+				if (index >= 0) {
+					String first = fromString.substring(0, index);
+					int depth = (first.length() - first.replace("(", "").length()) - (first.length() - first.replace(")", "").length());
+					// if we are at depth 0, we are in the core select, we want to use that for targetting the correct fields
+					if (depth == 0) {
+						whereString = fromString.substring(index);
+						fromString = fromString.substring(0, index);
+						break;
+					}
+				}
+			}
+		}
+		String primaryKeyBinding = null;
+		// keep a list of all the bindings so we can do a quick lookup when importing fields
+		Map<String, String> elementBindings = new HashMap<String, String>();
+		// we need to find the primary key for bindings
+		Collection<Element<?>> allChildren = TypeUtils.getAllChildren(definition);
+		index = 0;
+		for (Element<?> child : allChildren) {
+			if (index >= fieldSelections.size()) {
+				throw new IllegalArgumentException("Index " + index + "/" + fieldSelections.size() + " out of bounds: " + fieldSelections);
+			}
+			Boolean value = ValueUtils.getValue(PrimaryKeyProperty.getInstance(), child.getProperties());
+			if (value != null && value) {
+				primaryKeyBinding = getFieldNameFromSelection(fieldSelections.get(index));
+			}
+			elementBindings.put(child.getName(), getFieldNameFromSelection(fieldSelections.get(index)));
+			index++;
+		}
+		// we want to know which fields need replacing in the "where" clause
+		// for example "mde.title" to "t1.translation"
+		Map<String, String> replacements = new HashMap<String, String>();
+		index = 0;
+		if (builder.toString().length() > 0) {
+			builder.append("\n");
+		}
+		builder.append("select\n");
+		// for each child we check if it is translated
+		for (Element<?> child : allChildren) {
+			Boolean translatable = ValueUtils.getValue(TranslatableProperty.getInstance(), child.getProperties());
+			if (index > 0) {
+				builder.append(",\n");
+			}
+			String selection = fieldSelections.get(index);
+			if (translatable != null && translatable) {
+				// we need to find a string that conforms to \w.\w assuming something like "mde.name". This means we currently assume you are using prefixes. Unprefixed queries are rare enough that we ignore this edge case for now
+				String fieldName = getFieldNameFromSelection(selection);
+				// you might be importing it through a foreign key, for instance if masterdata entry wants to import the name of the category it belongs to from the masterDataCategoryId field it has, the new field would have foreign name masterDataCategoryId:name
+				String foreignName = ValueUtils.getValue(ForeignNameProperty.getInstance(), child.getProperties());
+				
+				String fieldNameToTranslate = null;
+				String fieldPrimaryKeyId = null;
+				
+				String[] parts = fieldName.split("\\.");
+				// we need to find the table binding for this so we can left join it to translations
+				if (foreignName != null) {
+					String[] foreignParts = foreignName.split(":");
+					String foreignBinding = elementBindings.get(foreignParts[0]);
+					if (foreignBinding == null) {
+						throw new IllegalArgumentException("Could not establish binding for imported field " + foreignName);
+					}
+					// this points to the local field name in that remote type
+					fieldNameToTranslate = foreignParts[1];
+					// this should point to the foreign key used locally to reference the foreign table
+					fieldPrimaryKeyId = foreignBinding;
+				}
+				else {
+					fieldNameToTranslate = parts[1];
+					fieldPrimaryKeyId = primaryKeyBinding;
+				}
+				
+				if (fieldNameToTranslate == null) {
+					throw new IllegalArgumentException("Could not find the field name to translate for: " + selection);
+				}
+				if (fieldPrimaryKeyId == null) {
+					throw new IllegalArgumentException("Could not find the primary key field to translate for: " + selection);
+				}
+				
+				String[] as = selection.split("\\bas\\b");
+				
+				// we don't actually have to fit in the join in the "correct" place which is actually hard to do, this particular replacement just jams it after the table alias, but that might be followed by its own join conditions
+//				fromString = fromString.replaceFirst("\\b" + parts[0] + "\\b", parts[0] + " left outer join " + binding.getTranslationTable() + " t" + index + " on t" + index + "." + binding.getFieldId() + " = " + fieldPrimaryKeyId + " and t" + index + "." + binding.getFieldName() + " = '" + fieldNameToTranslate + "' and t" + index + "." + binding.getFieldLanguage() + " = '" + language + "'");
+				fromString += "\n\tleft outer join " + binding.getTranslationTable() + " t" + index + " on t" + index + "." + binding.getFieldId() + " = " + fieldPrimaryKeyId + " and t" + index + "." + binding.getFieldName() + " = '" + fieldNameToTranslate + "' and t" + index + "." + binding.getFieldLanguage() + " = '" + language + "'"; 
+				
+				// we use a case when statement to see if the translation exists, if it doesn't we fall back to the raw value
+				String replacement = "case when t" + index + "." + binding.getFieldTranslation() + " is not null then t" + index + "." + binding.getFieldTranslation() + " else " + as[0].trim() + " end";
+				builder.append("\t" + replacement);
+				if (as.length > 1) {
+					builder.append(" as ").append(as[1].trim());
+				}
+				if (whereString != null) {
+					whereString = whereString.replaceAll("\\b" + as[0].trim() + "\\b", replacement);
+				}
+			}
+			else {
+				builder.append("\t" + selection);
+			}
+			index++;
+		}
+		builder.append("\n").append(fromString.trim());
+		if (whereString != null) {
+			builder.append("\n").append(whereString.trim());
+		}
+		return builder.toString();
+	}
+
+	private static String getFieldNameFromSelection(String selection) {
+		return selection.replaceAll("(?s).*?([\\w]+\\.[\\w]+).*?", "$1");
+	}
+
 	private void failTraces(List<Trace> traces, Exception e) {
 		for (Trace trace : traces) {
 			try {
