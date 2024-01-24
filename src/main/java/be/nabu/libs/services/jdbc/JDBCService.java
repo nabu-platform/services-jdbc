@@ -300,7 +300,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			if (sql != null) {
 				// regenerate input
 				Pattern pattern = Pattern.compile("(?<!:)[:$][\\w]+");
-				Matcher matcher = pattern.matcher(sql);
+				Matcher matcher = pattern.matcher(cleanupStrings(sql));
 				inputNames = new ArrayList<String>();
 				while (matcher.find()) {
 					String name = matcher.group().substring(1);
@@ -456,24 +456,31 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	
 	List<String> scanForPreparedVariables(String sql) {
 		Pattern pattern = Pattern.compile("(?<!:):[\\w]+");
-		Matcher matcher = pattern.matcher(sql);
+		Matcher matcher = pattern.matcher(cleanupStrings(sql));
 		List<String> inputNames = new ArrayList<String>();
 		while (matcher.find()) {
 			inputNames.add(matcher.group().substring(1));
 		}
 		return inputNames;
 	}
+
+	// @2023-12-07: apparently nobody ever noticed that things like to_date(:myVar, 'HH:mm') would result in a variable called "mm"
+	// anyway, we want to strip out the strings presumably, note that two single quotes next to one another is an escaped quote and does not count
+	private String cleanupStrings(String sql) {
+		return sql.replaceAll("'[^']*?'", "");
+	}
 	
 	public List<String> getInputNames() {
 		if (inputNames == null) {
-			List<String> inputNames = new ArrayList<String>();
-			Pattern pattern = Pattern.compile("(?<!:):[\\w]+");
-			Matcher matcher = pattern.matcher(sql);
-			inputNames = new ArrayList<String>();
-			while (matcher.find()) {
-				inputNames.add(matcher.group().substring(1));
-			}
-			this.inputNames = inputNames;
+			this.inputNames = scanForPreparedVariables(sql);
+//			List<String> inputNames = new ArrayList<String>();
+//			Pattern pattern = Pattern.compile("(?<!:):[\\w]+");
+//			Matcher matcher = pattern.matcher(sql);
+//			inputNames = new ArrayList<String>();
+//			while (matcher.find()) {
+//				inputNames.add(matcher.group().substring(1));
+//			}
+//			this.inputNames = inputNames;
 		}
 		return inputNames;
 	}
