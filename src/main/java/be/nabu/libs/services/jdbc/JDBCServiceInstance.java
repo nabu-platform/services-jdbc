@@ -448,12 +448,16 @@ public class JDBCServiceInstance implements ServiceInstance {
 				preparedSql = getDefinition().expandSql(preparedSql, orderBys);
 			}
 			
+			JDBCTranslator translator = dataSourceProvider instanceof DataSourceWithTranslator ? ((DataSourceWithTranslator) dataSourceProvider).getTranslator() : null;
+			TranslationBinding translationBinding = translator != null ? translator.getBinding() : null;
+			String defaultLanguage = dataSourceProvider instanceof DataSourceWithTranslator ? ((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() : null;
+			
 			boolean translatedBindings = false;
 			// once it has been expanded, check if we want to add translations based on the binding
-			if (language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null && ((DataSourceWithTranslator) dataSourceProvider).getTranslator().getBinding() != null 
-					// if there is no default language or it differs from the one you are updating, we need to put it to translations
-					&& (((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() == null || !((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage().equals(language))) {
-				preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), ((DataSourceWithTranslator) dataSourceProvider).getTranslator().getBinding(), language);
+			if (language != null && translationBinding != null 
+					// if there is no default language or it differs from the one you are updating, we need to join to translation table
+					&& (defaultLanguage == null || !defaultLanguage.equals(language))) {
+				preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), translationBinding, translator.mapLanguage(language));
 				translatedBindings = true;
 			}
 			

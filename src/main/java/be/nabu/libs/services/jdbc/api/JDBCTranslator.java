@@ -98,7 +98,14 @@ public interface JDBCTranslator {
 		@NotNull @WebParam(name = "translations") List<Translation> translations);
 	
 	// by default we don't have binding information
+	@WebResult(name = "binding")
 	public default TranslationBinding getBinding() {
 		return null;
+	}
+	
+	@WebResult(name = "mappedLanguage")
+	// allow you to map the language we receive (e.g. "en") into a value that can be mapped (e.g. a masterdata entry id)
+	public default String mapLanguage(@WebParam(name = "language") String language) {
+		return language;
 	}
 }
