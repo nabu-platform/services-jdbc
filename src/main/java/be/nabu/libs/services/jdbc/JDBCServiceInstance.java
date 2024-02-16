@@ -449,16 +449,19 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			
 			JDBCTranslator translator = dataSourceProvider instanceof DataSourceWithTranslator ? ((DataSourceWithTranslator) dataSourceProvider).getTranslator() : null;
-			TranslationBinding translationBinding = translator != null ? translator.getBinding() : null;
 			String defaultLanguage = dataSourceProvider instanceof DataSourceWithTranslator ? ((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() : null;
 			
 			boolean translatedBindings = false;
 			// once it has been expanded, check if we want to add translations based on the binding
-			if (language != null && translationBinding != null 
+			if (language != null 
 					// if there is no default language or it differs from the one you are updating, we need to join to translation table
 					&& (defaultLanguage == null || !defaultLanguage.equals(language))) {
-				preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), translationBinding, translator.mapLanguage(language));
-				translatedBindings = true;
+				// this potentially uses a default method which does not work in java 8. for this reason we only do this call if it is absolutely necessary
+				TranslationBinding translationBinding = translator != null ? translator.getBinding() : null;
+				if (translationBinding != null) {
+					preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), translationBinding, translator.mapLanguage(language));
+					translatedBindings = true;
+				}
 			}
 			
 			originalSql = preparedSql;
@@ -1333,7 +1336,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		catch (Exception e) {
 			failTraces(runningTraces, e);
-			throw new ServiceException(e);
+			throw new ServiceException((String) null, "Could not execute on connection " + connectionId, e);
 		}
 		finally {
 			// if the pool is set to auto commit and a connection was created, close it so it is released to the pool again
