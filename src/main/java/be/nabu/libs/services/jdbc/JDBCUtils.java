@@ -15,6 +15,7 @@ import be.nabu.libs.types.api.ComplexType;
 import be.nabu.libs.types.api.DefinedType;
 import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.Type;
+import be.nabu.libs.types.base.TypeBaseUtils;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.DuplicateProperty;
@@ -102,10 +103,7 @@ public class JDBCUtils {
 		// child can use restrictions to restrict parent types, so the child is "correcter" in a given context
 		while (type.getSuperType() != null) {
 			// make sure we take into account restrictions we imposed on the supertype
-			String value = ValueUtils.getValue(RestrictProperty.getInstance(), type.getProperties());
-			if (value != null && !value.trim().isEmpty()) {
-				restrictions.addAll(Arrays.asList(value.split("[\\s]*,[\\s]*")));
-			}
+			restrictions.addAll(TypeBaseUtils.getRestricted(type));
 			Type superType = type.getSuperType();
 			if (superType instanceof ComplexType) {
 				String collectionName = ValueUtils.getValue(CollectionNameProperty.getInstance(), superType.getProperties());
@@ -262,10 +260,7 @@ public class JDBCUtils {
 			}
 		}
 		
-		String restriction = ValueUtils.getValue(RestrictProperty.getInstance(), type.getProperties());
-		if (restriction != null) {
-			restrictions.addAll(Arrays.asList(restriction.split("[\\s]*,[\\s]*")));
-		}
+		restrictions.addAll(TypeBaseUtils.getRestricted(type));
 		
 		Type superType = type.getSuperType();
 		// if we extend a complex type, check if it has its own collection name
