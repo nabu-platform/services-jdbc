@@ -19,7 +19,9 @@ import be.nabu.libs.types.base.TypeBaseUtils;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.DuplicateProperty;
+import be.nabu.libs.types.properties.EnricherProperty;
 import be.nabu.libs.types.properties.ForeignKeyProperty;
+import be.nabu.libs.types.properties.ForeignNameProperty;
 import be.nabu.libs.types.properties.HiddenProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.RestrictProperty;
@@ -238,7 +240,19 @@ public class JDBCUtils {
 		}
 		return tables;
 	}
-	
+	private static boolean ignoreField(Element<?> element) {
+		// a foreign name indicates an imported field which should not be persisted
+		String foreignName = ValueUtils.getValue(ForeignNameProperty.getInstance(), element.getProperties());
+		if (foreignName != null && !foreignName.trim().isEmpty()) {
+			return true;
+		}
+		// the field is enriched from somewhere else
+		String enricher = ValueUtils.getValue(EnricherProperty.getInstance(), element.getProperties());
+		if (enricher != null && !enricher.trim().isEmpty()) {
+			return true;
+		}
+		return false;
+	}
 	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, boolean isRoot, List<String> restrictions) {
 		String typeCollectionName = getTypeName(type, isRoot);
 		
@@ -256,7 +270,10 @@ public class JDBCUtils {
 		// we add the local children that were not restricted from above
 		for (Element<?> child : type) {
 			if (!children.containsKey(child.getName()) && !restrictions.contains(child.getName())) {
-				children.put(child.getName(), child);
+				// make sure we don't have properties that make us ignore the field
+				if (!ignoreField(child)) {
+					children.put(child.getName(), child);
+				}
 			}
 		}
 		
