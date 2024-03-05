@@ -24,6 +24,7 @@ import be.nabu.libs.services.api.ServiceInterface;
 import be.nabu.libs.services.jdbc.api.ChangeTracker;
 import be.nabu.libs.services.jdbc.api.DynamicDataSourceResolver;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
+import be.nabu.libs.services.jdbc.api.Statistic;
 import be.nabu.libs.types.DefinedTypeResolverFactory;
 import be.nabu.libs.types.SimpleTypeWrapperFactory;
 import be.nabu.libs.types.TypeUtils;
@@ -118,6 +119,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 
 	private Map<SQLDialect, Map<String, String>> preparedSql = new HashMap<SQLDialect, Map<String, String>>();
 	private Map<SQLDialect, Map<String, String>> totalCountSql = new HashMap<SQLDialect, Map<String, String>>();
+	private Map<SQLDialect, Map<String, String>> statisticsSql = new HashMap<SQLDialect, Map<String, String>>();
 	
 	public JDBCService(String id) {
 		this.id = id;
@@ -274,6 +276,26 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			}
 		}
 		return totalCountSql.get(dialect).get(sql); 
+	}
+	
+	String getStatisticsSql(SQLDialect dialect, String sql, List<String> fields) {
+		if (!statisticsSql.containsKey(dialect)) {
+			synchronized(statisticsSql) {
+				if (!statisticsSql.containsKey(dialect)) {
+					statisticsSql.put(dialect, new HashMap<String, String>());
+				}
+			}
+		}
+		// the query is specific to the fields given
+		String key = sql + fields;
+		if (!statisticsSql.get(dialect).containsKey(key)) {
+			synchronized(statisticsSql.get(dialect)) {
+				if (!statisticsSql.get(dialect).containsKey(key)) {
+					statisticsSql.get(dialect).put(key, SQLDialect.getDefaultStatisticsQuery(sql, fields));
+				}
+			}
+		}
+		return statisticsSql.get(dialect).get(key); 
 	}
 	
 	/**

@@ -2,6 +2,7 @@ package be.nabu.libs.services.jdbc;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -369,5 +370,75 @@ public class JDBCUtils {
 			throw new IllegalStateException("Can not find foreign key from " + from + " to " + to);
 		}
 		return Arrays.asList(link.getName(), primary.getName());
+	}
+	
+	
+	
+	
+	
+	
+	
+	
+	public static class SQLQueryParts {
+		private String select, from, where, orderBy, groupBy, paging;
+
+		public String getSelect() {
+			return select;
+		}
+		public void setSelect(String select) {
+			this.select = select;
+		}
+		public String getFrom() {
+			return from;
+		}
+		public void setFrom(String from) {
+			this.from = from;
+		}
+		public String getWhere() {
+			return where;
+		}
+		public void setWhere(String where) {
+			this.where = where;
+		}
+		public String getOrderBy() {
+			return orderBy;
+		}
+		public void setOrderBy(String orderBy) {
+			this.orderBy = orderBy;
+		}
+		public String getGroupBy() {
+			return groupBy;
+		}
+		public void setGroupBy(String groupBy) {
+			this.groupBy = groupBy;
+		}
+		public String getPaging() {
+			return paging;
+		}
+		public void setPaging(String paging) {
+			this.paging = paging;
+		}
+		
+	}
+	
+	private static Map<String, SQLQueryParts> parts = new HashMap<String, SQLQueryParts>();
+	
+	public static SQLQueryParts parse(String query) {
+		SQLQueryParts sqlQueryParts = parts.get(query);
+		if (sqlQueryParts == null) {
+			int depth = 0;
+			for (int i = 0; i < query.length(); i++) {
+				char charAt = query.charAt(i);
+				if (charAt == '(') {
+					depth++;
+				}
+				else if (charAt == ')') {
+					depth--;
+				}
+				
+			}
+		}
+		// TODO: not finished, should be plugged in in the dialect etc where we try to parse queries
+		return sqlQueryParts;
 	}
 }

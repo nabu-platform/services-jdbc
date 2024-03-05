@@ -23,6 +23,7 @@ import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import be.nabu.eai.api.NamingConvention;
 import be.nabu.eai.repository.EAIResourceRepository;
 import be.nabu.eai.repository.api.Repository;
 import be.nabu.eai.repository.util.SystemPrincipal;
@@ -61,6 +62,7 @@ import be.nabu.libs.tracer.api.Trace;
 import be.nabu.libs.tracer.api.TracerProvider;
 import be.nabu.libs.tracer.impl.TracerFactory;
 import be.nabu.libs.services.jdbc.api.SQLDialect;
+import be.nabu.libs.services.jdbc.api.Statistic;
 import be.nabu.libs.types.BaseTypeInstance;
 import be.nabu.libs.types.CollectionHandlerFactory;
 import be.nabu.libs.types.ComplexContentWrapperFactory;
@@ -99,6 +101,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 	public static final String METRIC_EXECUTION_TIME = "sqlExecutionTime";
 	public static final String METRIC_MAP_TIME = "resultsMapTime";
 	public static final String METRIC_COUNT_TIME = "totalCountExecutionTime";
+	public static final String METRIC_STATISTICS_TIME = "totalStatisticsExecutionTime";
+	public static final String METRIC_STATISTICS_MAP_TIME = "statisticsMapTime";
 	public static final Integer PREPARED_STATEMENT_ARRAY_SIZE = Integer.parseInt(System.getProperty("be.nabu.libs.services.jdbc.preparedStatementArraySize", "10"));
 	
 	private JDBCService definition;
@@ -179,7 +183,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 			connectionId = definition.getDataSourceResolver().getDataSourceId(definition.getId());
 		}
 		if (connectionId == null) {
-			throw new ServiceException("JDBC-0", "No JDBC pool configured");
+			ServiceRuntime runtime = ServiceRuntime.getRuntime();
+			String serviceContext = runtime == null ? null : ServiceUtils.getServiceContext(runtime);
+			throw new ServiceException("JDBC-0", "No JDBC pool configured" + serviceContext);
 		}
 		String transactionId = content == null ? null : (String) content.get(JDBCService.TRANSACTION);
 		// get the pool, we need to know if it's transactional
@@ -645,6 +651,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 			
 			PreparedStatement totalCountStatement = null;
 			DatabaseRequestTrace totalCountTrace = null;
+			DatabaseRequestTrace statisticsTrace = null;
 			// if we want a total count, check if there is a limit (if not, total count == actual count)
 			// also check that it is not lazy cause we won't know the total count then even if not limited
 			if (includeTotalCount && (limit != null || lazy)) {
@@ -663,6 +670,25 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 				totalCountStatement = connection.prepareStatement(totalCountSql);
 				totalCountTrace = tracer.newTrace(definition.getId(), "total-count", totalCountSql);
+			}
+			
+			List<String> statistics = content == null || content.get(JDBCService.STATISTICS) == null ? null : (List<String>) content.get(JDBCService.STATISTICS);
+			// if we want statistics, we don't care about the order by
+			PreparedStatement statisticsStatement = null;
+			if (statistics != null && !statistics.isEmpty()) {
+				// we want to underscorify
+				List<String> normalizedStatistics = new ArrayList<String>();
+				for (String statistic : statistics) {
+					normalizedStatistics.add(NamingConvention.UNDERSCORE.apply(statistic));
+				}
+				String statisticsQuery = getDefinition().getStatisticsSql(dataSourceProvider.getDialect(), preparedSql, normalizedStatistics);
+				if (statisticsQuery != null) {
+					if (debug != null) {
+						debug.setStatisticsSql(statisticsQuery);
+					}
+					statisticsStatement = connection.prepareStatement(statisticsQuery);
+					statisticsTrace = tracer.newTrace(definition.getId(), "statistics", statisticsQuery);
+				}
 			}
 			
 			if (orderBys != null && !orderBys.isEmpty()) {
@@ -807,6 +833,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 									if (totalCountStatement != null) {
 										dialect.setObject(totalCountStatement, element, index, provider.getAsCollection(value).size(), preparedSql);
 									}
+									if (statisticsStatement != null) {
+										dialect.setObject(statisticsStatement, element, index, provider.getAsCollection(value).size(), preparedSql);
+									}
 									dialect.setObject(statement, element, index++, provider.getAsCollection(value).size(), preparedSql);
 								}
 								else {
@@ -817,6 +846,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 										if (totalCountStatement != null) {
 											dialect.setObject(totalCountStatement, element, index, single, null);
 										}
+										if (statisticsStatement != null) {
+											dialect.setObject(statisticsStatement, element, index, single, null);
+										}
 										dialect.setObject(statement, element, index++, single, preparedSql);
 										amount++;
 										last = single;
@@ -825,6 +857,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 										if (totalCountStatement != null) {
 											dialect.setObject(totalCountStatement, element, index, last, null);
 										}
+										if (statisticsStatement != null) {
+											dialect.setObject(statisticsStatement, element, index, last, null);
+										}
 										dialect.setObject(statement, element, index++, last, preparedSql);
 									}
 								}
@@ -832,6 +867,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 							else {
 								if (totalCountStatement != null) {
 									dialect.setObject(totalCountStatement, element, index, value, null);
+								}
+								if (statisticsStatement != null) {
+									dialect.setObject(statisticsStatement, element, index, value, null);
 								}
 								dialect.setObject(statement, element, index++, value, preparedSql);
 							}
@@ -853,11 +891,17 @@ public class JDBCServiceInstance implements ServiceInstance {
 						if (totalCountStatement != null) {
 							dialect.setObject(totalCountStatement, element, index, null, null);
 						}
+						if (statisticsStatement != null) {
+							dialect.setObject(statisticsStatement, element, index, null, null);
+						}
 						dialect.setObject(statement, element, index++, null, preparedSql);
 					}
 					if (isBatch) {
 						if (totalCountStatement != null) {
 							totalCountStatement.addBatch();
+						}
+						if (statisticsStatement != null) {
+							statisticsStatement.addBatch();
 						}
 						statement.addBatch();
 						batchInputAdded = true;
@@ -1275,6 +1319,83 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 				else if (includeTotalCount) {
 					output.set(JDBCService.TOTAL_ROW_COUNT, output.get(JDBCService.ROW_COUNT));
+				}
+				
+				if (statisticsStatement != null) {
+					statisticsTrace.start();
+					runningTraces.add(statisticsTrace);
+					MetricTimer statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_TIME);
+					ResultSet statisticsResultSet = statisticsStatement.executeQuery();
+					Long statisticsTime = statisticsTimer == null ? null : statisticsTimer.stop();
+					if (debug != null) {
+						debug.setStatisticsDuration(statisticsTime);
+					}
+					statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_MAP_TIME);
+					// we assume the selection is as follows:
+					// grouping(field1)
+					// grouping(field2)
+					// field1
+					// field2
+					// count(*)
+					// each row can contain a value for any of the fields
+					List<Statistic> statisticResults = new ArrayList<Statistic>();
+					while (statisticsResultSet.next()) {
+						// first we need to determine the fields that are joining the key
+						String key = "";
+						String value = "";
+						// if you have statistics with multiple values, we need to jump further to get the actual value
+						// the grouping will be a single value, but the actual values are split out into different columns
+						// e.g. grouping(battery_type_id, chemical_family_id), battery_type_id, chemical_family_id
+						int additionalCounter = 0;
+						for (int i = 0; i < statistics.size(); i++) {
+							String statistic = statistics.get(i);
+							int amountOfFields = statistic.split(",").length;
+							if (amountOfFields > 1) {
+								additionalCounter += amountOfFields - 1;
+								// TODO: does not work correctly when actually grouping fields together! the value is not at the last position but rather spread out over the positions
+								// it is 95% ready though, just need to revisit the value resolving
+								throw new UnsupportedOperationException("We currently don't support multiple field groupings yet");
+							}
+							// is 1-based
+							long isUsed = statisticsResultSet.getLong(i + 1);
+							// it is 0 if used, otherwise 1 (kinda weird...)
+							if (isUsed == 0) {
+								if (!key.isEmpty()) {
+									key += ",";
+								}
+								key += statistic;
+								// the value is exactly size() further, e.g. grouping(field2) is index 2, the actual value is 2+statistics.size() == 4
+								if (!value.isEmpty()) {
+									value += ",";
+								}
+								Object keyValue = statisticsResultSet.getObject(i + 1 + statistics.size() + additionalCounter);
+								if (keyValue == null) {
+									value += "null";
+								}
+								else if (keyValue instanceof String) {
+									value += keyValue;
+								}
+								else {
+									value += ConverterFactory.getInstance().getConverter().convert(keyValue, String.class);
+								}
+							}
+						}
+						// the actual amount is beyond the fields
+						long count = statisticsResultSet.getLong(statistics.size() * 2 + 1 + additionalCounter);
+						StatisticImpl statistic = new StatisticImpl();
+						statistic.setAmount(count);
+						statistic.setName(key);
+						statistic.setValue(value.trim().isEmpty() ? null : value);
+						statisticResults.add(statistic);
+					}
+					statisticsTime = statisticsTimer == null ? null : statisticsTimer.stop();
+					if (debug != null) {
+						debug.setStatisticsMappingDuration(statisticsTime);
+					}
+					output.set(JDBCService.STATISTICS, statisticResults);
+					statisticsTrace.setRowCount(1);
+					statisticsTrace.stop();
+					runningTraces.remove(statisticsTrace);
 				}
 				
 				if (generatedColumn != null) {

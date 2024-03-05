@@ -12,7 +12,9 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
 
@@ -393,6 +395,66 @@ public interface SQLDialect {
 
 	public static String getDefaultTotalCountQuery(String query) {
 		return getDefaultTotalCountQuery(query, false);
+	}
+	
+	// TODO: the query handling is very lightweight currently
+	/*
+	 * Note: we know that a field can be selected multiple times
+	 * For instance you could want statistics for:
+	 * batteryTypeId,chemicalFamilyId
+	 * chemicalFamilyId
+	 * This means you want the chemical family both separately and in the grouping with battery type id
+	 * We "could" optimize the select to only select the chemical family once, but it is also OK to select it multiple times
+	 * By selecting it multiple times, it's easier to jump to the correct position to fetch the value rather than having to know the other groups
+	 * This decision is obviously tightly coupled to the jdbc service instance running the actual query
+	 * 
+	 * Manual example query:
+			select grouping(rechargeable), rechargeable, battery_usage_id, chemical_family_id, battery_usage_id, battery_category_id, count(*) from battery_types where chemical_family_id='2bbd25d1e8c846a98bf1f2cb698712df' group by grouping sets(
+				(rechargeable),
+				(battery_usage_id),
+				(battery_category_id, chemical_family_id)
+			)
+			
+		Generated example:
+		
+		select
+			grouping(ticker_id),
+			grouping(ticker_eod_import_id),
+			ticker_id,
+			ticker_eod_import_id,
+			count(*)
+		from  ticker_eods
+		group by grouping sets((ticker_id),
+			(ticker_eod_import_id))
+	 */
+	public static String getDefaultStatisticsQuery(String query, List<String> statistics) {
+		// we don't do specials just yet, focus on simple stuff
+		if (isGrouped(query) || isUnion(query) || isDistinct(query)) {
+			return null;
+		}
+		String groupBy = "";
+		String grouping = "";
+		String fields = "";
+		for (String statistic : statistics) {
+			if (statistic == null) {
+				continue;
+			}
+			if (!grouping.isEmpty()) {
+				grouping += ",\n\t";
+				fields += ",\n\t";
+				groupBy += ",\n\t";
+			}
+			grouping += "grouping(" + statistic + ")";
+			
+			fields += statistic;
+			
+			groupBy += "(" + statistic + ")";
+		}
+		String select = "select\n\t" + grouping + ",\n\t" + fields + ",\n\tcount(*)";
+		String fromPart = query.split("(?i)(?s)\\bfrom\\b", 2)[1];
+		String beforeGroupBy = fromPart.split("(?i)(?s)\\bgroup by\\b")[0];
+		String result = select + "\nfrom " + beforeGroupBy + "\ngroup by grouping sets(" + groupBy + ")";
+		return result;
 	}
 	
 	public static String getDefaultTotalCountQuery(String query, boolean useStarCount) {

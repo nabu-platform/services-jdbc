@@ -5,9 +5,9 @@ import javax.xml.bind.annotation.XmlRootElement;
 @XmlRootElement(name = "jdbc")
 public class JDBCDebugInformation {
 	
-	private String connectionId, transactionId, sql, totalCountSql, serviceContext;
+	private String connectionId, transactionId, sql, totalCountSql, serviceContext, statisticsSql;
 	private Integer inputAmount, outputAmount;
-	private Long executionDuration, mappingDuration, totalCountDuration;
+	private Long executionDuration, mappingDuration, totalCountDuration, statisticsDuration, statisticsMappingDuration;
 	
 	public String getTransactionId() {
 		return transactionId;
@@ -68,5 +68,23 @@ public class JDBCDebugInformation {
 	}
 	public void setServiceContext(String serviceContext) {
 		this.serviceContext = serviceContext;
+	}
+	public Long getStatisticsDuration() {
+		return statisticsDuration;
+	}
+	public void setStatisticsDuration(Long statisticsDuration) {
+		this.statisticsDuration = statisticsDuration;
+	}
+	public String getStatisticsSql() {
+		return statisticsSql;
+	}
+	public void setStatisticsSql(String statisticsSql) {
+		this.statisticsSql = statisticsSql;
+	}
+	public Long getStatisticsMappingDuration() {
+		return statisticsMappingDuration;
+	}
+	public void setStatisticsMappingDuration(Long statisticsMappingDuration) {
+		this.statisticsMappingDuration = statisticsMappingDuration;
 	}
 }
