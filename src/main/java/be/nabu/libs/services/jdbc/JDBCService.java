@@ -34,15 +34,18 @@ import be.nabu.libs.types.api.Element;
 import be.nabu.libs.types.api.KeyValuePair;
 import be.nabu.libs.types.api.ModifiableComplexType;
 import be.nabu.libs.types.api.SimpleTypeWrapper;
+import be.nabu.libs.types.api.Type;
 import be.nabu.libs.types.base.ComplexElementImpl;
 import be.nabu.libs.types.base.Scope;
 import be.nabu.libs.types.base.SimpleElementImpl;
+import be.nabu.libs.types.base.TypeBaseUtils;
 import be.nabu.libs.types.base.ValueImpl;
 import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.java.BeanType;
 import be.nabu.libs.types.properties.CalculationProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.CommentProperty;
+import be.nabu.libs.types.properties.EnricherProperty;
 import be.nabu.libs.types.properties.ForeignKeyProperty;
 import be.nabu.libs.types.properties.ForeignNameProperty;
 import be.nabu.libs.types.properties.HiddenProperty;
@@ -727,13 +730,23 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 				Map<String, String> selectedFieldTables = new HashMap<String, String>();
 				
 				for (ComplexType type : types) {
-					Boolean value = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
+					Boolean hiddenBoolean = ValueUtils.getValue(HiddenProperty.getInstance(), type.getProperties());
 					
 					String typeName = JDBCServiceInstance.uncamelify(JDBCUtils.getTypeName(type, true));
 					String bindingName = typeName;
 					
+					// if we are not explicitly hidden, we are not the last type in the line and have no explicit collection name, we are skipped
+					// @2024-03-11 not sure why we are still picking tables that are not explicitly marked, don't think there ever was a usecase for it
+					// the problem is, sometimes we want core types that are extended into database types that are in and off themselves not database tables
+					if (hiddenBoolean == null && types.indexOf(type) < types.size() - 1) {
+						String collectionName = ValueUtils.getValue(CollectionNameProperty.getInstance(), type.getProperties());
+						if (collectionName == null) {
+							hiddenBoolean = true;
+						}
+					}
+					
 					// find the binding name if necessary
-					if (value == null || !value) {
+					if (hiddenBoolean == null || !hiddenBoolean) {
 						String[] split = from.split("\\b" + typeName + "\\b(?!\\.)", -1);
 						// if there are multiple, we are going to assume the first binding is the correct one!
 						// too many times we have run into the issue that we want to do additional binding and can't
@@ -770,7 +783,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 					
 					bindingNames.put(type, bindingName);
 					
-					if (!inherited.isEmpty() && (value == null || !value)) {
+					if (!inherited.isEmpty() && (hiddenBoolean == null || !hiddenBoolean)) {
 						for (Element<?> child : inherited) {
 							if (!select.toString().isEmpty()) {
 								select.append(",\n");
@@ -797,7 +810,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 							continue;
 						}
 						// if it is hidden, we probably inherit it
-						if (value != null && value) {
+						if (hiddenBoolean != null && hiddenBoolean) {
 							inherited.add(child);
 						}
 						// if we support foreign name expansion, we need to get creative...
@@ -990,6 +1003,9 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 								importedChildren.put(child.getName(), importedBinding);
 								select.append("\t" + importedBinding + " as " + JDBCServiceInstance.uncamelify(child.getName()));
 							}
+						}
+						else if (TypeBaseUtils.isEnriched(child)) {
+							// we do nothing, it is enriched later on
 						}
 						else {
 							if (!select.toString().isEmpty()) {
