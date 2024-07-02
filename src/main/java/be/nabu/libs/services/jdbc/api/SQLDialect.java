@@ -218,6 +218,13 @@ public interface SQLDialect {
 		}
 	}
 	
+	/**
+	 * The name of the element when the value is null
+	 */
+	public default String getSQLNullName(Element<?> element) {
+		return getSQLName(element);
+	}
+	
 	public default String getSQLName(Element<?> element) {
 		SimpleType<?> simpleType = (SimpleType<?>) element.getType();
 		return getSQLName(simpleType.getInstanceClass());
@@ -348,7 +355,7 @@ public interface SQLDialect {
 //					java.sql.Array array = statement.getConnection().createArrayOf(getSQLName(simpleType.getInstanceClass()), new Object[0]);
 //					statement.setObject(index, array, Types.ARRAY);
 //					statement.setObject(index, null, Types.ARRAY);
-					statement.setNull(index, Types.ARRAY, getSQLName(element));
+					statement.setNull(index, Types.ARRAY, getSQLNullName(element));
 				}
 				else {
 					statement.setNull(index, sqlType);

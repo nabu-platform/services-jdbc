@@ -7,11 +7,13 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -83,6 +85,7 @@ import be.nabu.libs.types.java.BeanResolver;
 import be.nabu.libs.types.properties.AggregateProperty;
 import be.nabu.libs.types.properties.CollectionNameProperty;
 import be.nabu.libs.types.properties.ForeignNameProperty;
+import be.nabu.libs.types.properties.LabelProperty;
 import be.nabu.libs.types.properties.PrimaryKeyProperty;
 import be.nabu.libs.types.properties.TranslatableProperty;
 import be.nabu.libs.types.resultset.ResultSetCollectionHandler;
@@ -140,6 +143,11 @@ public class JDBCServiceInstance implements ServiceInstance {
 			return POJOUtils.newProxy(ChangeTracker.class, repository, SystemPrincipal.ROOT, changeTracker);
 		}
 		return null;
+	}
+	
+	private String getStatisticsName(Element<?> element) {
+		String label = ValueUtils.getValue(LabelProperty.getInstance(), element.getProperties());
+		return label == null ? element.getName() : label;
 	}
 	
 	@SuppressWarnings({ "unchecked", "rawtypes" })
@@ -203,7 +211,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		if (debug != null) {
 			debug.setConnectionId(connectionId);
-			debug.setTransactionId(transactionId);
+			debug.setTransactionId(transactionId == null ? executionContext.getTransactionContext().getDefaultTransactionId() : transactionId);
 			debug.setServiceContext(ServiceUtils.getServiceContext(ServiceRuntime.getRuntime()));
 		}
 		
@@ -789,6 +797,10 @@ public class JDBCServiceInstance implements ServiceInstance {
 			else {
 				statement = connection.prepareStatement(preparedSql);
 			}
+
+			// we need to run the statistics statement multiple times while toggline certain values
+			// we want to keep a insertion order value setting so we can reset them easily
+			Map<String, Object> statisticsValues = statisticsStatement == null ? null : new LinkedHashMap<String, Object>();
 			
 			boolean batchInputAdded = false;
 			try {
@@ -835,6 +847,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 									}
 									if (statisticsStatement != null) {
 										dialect.setObject(statisticsStatement, element, index, provider.getAsCollection(value).size(), preparedSql);
+										statisticsValues.put(getStatisticsName(element) + "/" + index + "/" + element.getName(), provider.getAsCollection(value).size());
 									}
 									dialect.setObject(statement, element, index++, provider.getAsCollection(value).size(), preparedSql);
 								}
@@ -848,6 +861,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 										}
 										if (statisticsStatement != null) {
 											dialect.setObject(statisticsStatement, element, index, single, null);
+											statisticsValues.put(getStatisticsName(element) + "/" + index + "/" + element.getName(), single);
 										}
 										dialect.setObject(statement, element, index++, single, preparedSql);
 										amount++;
@@ -859,6 +873,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 										}
 										if (statisticsStatement != null) {
 											dialect.setObject(statisticsStatement, element, index, last, null);
+											statisticsValues.put(getStatisticsName(element) + "/" + index + "/" + element.getName(), last);
 										}
 										dialect.setObject(statement, element, index++, last, preparedSql);
 									}
@@ -870,6 +885,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 								}
 								if (statisticsStatement != null) {
 									dialect.setObject(statisticsStatement, element, index, value, null);
+									statisticsValues.put(getStatisticsName(element) + "/" + index + "/" + element.getName(), value);
 								}
 								dialect.setObject(statement, element, index++, value, preparedSql);
 							}
@@ -893,6 +909,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 						}
 						if (statisticsStatement != null) {
 							dialect.setObject(statisticsStatement, element, index, null, null);
+							statisticsValues.put(getStatisticsName(element) + "/" + index + "/" + element.getName(), null);
 						}
 						dialect.setObject(statement, element, index++, null, preparedSql);
 					}
@@ -1322,15 +1339,49 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 				
 				if (statisticsStatement != null) {
+					// for each statistic field you want that has an ACTIVE input (so not null) that applies a filter, we need to rerun the statistics WITHOUT that filter to get a representative amount
+					// for example suppose you have a filter "chemicalFamily" with 2 entries: lead & zinc which have 5 and 10 entries respectively
+					// if you select "lead", the zinc entry should still show 10, because if you switched your particular filter to zinc, you would unset the lead value and get 10 values
+					List<String> statisticsVariations = new ArrayList<String>();
+					
+					// we check which fields in our input are linked to the statistic in question
+					Map<String, List<String>> statisticFields = new HashMap<String, List<String>>();
+					for (Element<?> element : TypeUtils.getAllChildren(definition.getParameters())) {
+						String label = getStatisticsName(element);
+						if (statistics.contains(label)) {
+							logger.debug("Adding statistic " + label + " # " + statistics);
+							if (!statisticFields.containsKey(label)) {
+								statisticFields.put(label, new ArrayList<String>());
+							}
+							statisticFields.get(label).add(element.getName());
+						}
+					}
+					// only worth calculating variations if we have any fields that impact the statistics
+					// here we want to see if the theoretical input actually has any values, only if we actually apply values do we want an alternative check
+					if (!statisticFields.isEmpty()) {
+						for (ComplexContent parameter : parameters) {
+							for (String statistic : statistics) {
+								if (statisticFields.containsKey(statistic)) {
+									for (String fieldName : statisticFields.get(statistic)) {
+										logger.debug("Checking statistic value " + statistic + " (" + fieldName + ") = " + parameter.get(fieldName));
+										if (parameter.get(fieldName) != null) {
+											statisticsVariations.add(statistic);
+										}
+									}
+								}
+							}
+						}
+					}
+					
+					// build a new list to see if we have any statistics remaining in our default set
+					List<String> defaultStatistics = new ArrayList<String>(statistics);
+					// remove all the variations we need to run manually
+					defaultStatistics.removeAll(statisticsVariations);
+					
 					statisticsTrace.start();
 					runningTraces.add(statisticsTrace);
-					MetricTimer statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_TIME);
-					ResultSet statisticsResultSet = statisticsStatement.executeQuery();
-					Long statisticsTime = statisticsTimer == null ? null : statisticsTimer.stop();
-					if (debug != null) {
-						debug.setStatisticsDuration(statisticsTime);
-					}
-					statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_MAP_TIME);
+					
+					Map<String, Statistic> statisticResults = new HashMap<String, Statistic>();
 					// we assume the selection is as follows:
 					// grouping(field1)
 					// grouping(field2)
@@ -1338,61 +1389,42 @@ public class JDBCServiceInstance implements ServiceInstance {
 					// field2
 					// count(*)
 					// each row can contain a value for any of the fields
-					List<Statistic> statisticResults = new ArrayList<Statistic>();
-					while (statisticsResultSet.next()) {
-						// first we need to determine the fields that are joining the key
-						String key = "";
-						String value = "";
-						// if you have statistics with multiple values, we need to jump further to get the actual value
-						// the grouping will be a single value, but the actual values are split out into different columns
-						// e.g. grouping(battery_type_id, chemical_family_id), battery_type_id, chemical_family_id
-						int additionalCounter = 0;
-						for (int i = 0; i < statistics.size(); i++) {
-							String statistic = statistics.get(i);
-							int amountOfFields = statistic.split(",").length;
-							if (amountOfFields > 1) {
-								additionalCounter += amountOfFields - 1;
-								// TODO: does not work correctly when actually grouping fields together! the value is not at the last position but rather spread out over the positions
-								// it is 95% ready though, just need to revisit the value resolving
-								throw new UnsupportedOperationException("We currently don't support multiple field groupings yet");
-							}
-							// is 1-based
-							long isUsed = statisticsResultSet.getLong(i + 1);
-							// it is 0 if used, otherwise 1 (kinda weird...)
-							if (isUsed == 0) {
-								if (!key.isEmpty()) {
-									key += ",";
-								}
-								key += statistic;
-								// the value is exactly size() further, e.g. grouping(field2) is index 2, the actual value is 2+statistics.size() == 4
-								if (!value.isEmpty()) {
-									value += ",";
-								}
-								Object keyValue = statisticsResultSet.getObject(i + 1 + statistics.size() + additionalCounter);
-								if (keyValue == null) {
-									value += "null";
-								}
-								else if (keyValue instanceof String) {
-									value += keyValue;
-								}
-								else {
-									value += ConverterFactory.getInstance().getConverter().convert(keyValue, String.class);
-								}
-							}
+//					List<Statistic> statisticResults = new ArrayList<Statistic>();
+					long mappingTime = 0;
+					long statisticsTime = 0;
+					if (!defaultStatistics.isEmpty()) {
+						logger.debug("Running default with: " + statisticsValues);
+						MetricTimer statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_TIME);
+						ResultSet statisticsResultSet = statisticsStatement.executeQuery();
+						statisticsTime += statisticsTimer == null ? 0 : statisticsTimer.stop();
+						
+						statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_MAP_TIME);
+						mapStatisticsResult(statistics, defaultStatistics, statisticsResultSet, statisticResults);
+						mappingTime = statisticsTimer == null ? 0 : statisticsTimer.stop();
+					}
+					for (String variant : statisticsVariations) {
+						logger.debug("Running variant '" + variant + "' with: " + statisticsValues);
+						for (Map.Entry<String, Object> statisticsValue : statisticsValues.entrySet()) {
+							String[] split = statisticsValue.getKey().split("/");
+							logger.debug("\t" + split[0] + " (== " + variant + ")" + " = " + (split[0].equals(variant) ? null : statisticsValue.getValue()));
+							dialect.setObject(statisticsStatement, definition.getParameters().get(split[2]), Integer.parseInt(split[1]), split[0].equals(variant) ? null : statisticsValue.getValue(), null);
 						}
-						// the actual amount is beyond the fields
-						long count = statisticsResultSet.getLong(statistics.size() * 2 + 1 + additionalCounter);
-						StatisticImpl statistic = new StatisticImpl();
-						statistic.setAmount(count);
-						statistic.setName(key);
-						statistic.setValue(value.trim().isEmpty() ? null : value);
-						statisticResults.add(statistic);
+						
+						MetricTimer statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_TIME);
+						ResultSet statisticsResultSet = statisticsStatement.executeQuery();
+						statisticsTime += statisticsTimer == null ? 0 : statisticsTimer.stop();
+						
+						statisticsTimer = metrics == null ? null : metrics.start(METRIC_STATISTICS_MAP_TIME);
+						mapStatisticsResult(statistics, Arrays.asList(variant), statisticsResultSet, statisticResults);
+						mappingTime = statisticsTimer == null ? 0 : statisticsTimer.stop();
 					}
-					statisticsTime = statisticsTimer == null ? null : statisticsTimer.stop();
 					if (debug != null) {
-						debug.setStatisticsMappingDuration(statisticsTime);
+						debug.setStatisticsMappingDuration(mappingTime);
 					}
-					output.set(JDBCService.STATISTICS, statisticResults);
+					if (debug != null) {
+						debug.setStatisticsDuration(statisticsTime);
+					}
+					output.set(JDBCService.STATISTICS, new ArrayList<Statistic>(statisticResults.values()));
 					statisticsTrace.setRowCount(1);
 					statisticsTrace.stop();
 					runningTraces.remove(statisticsTrace);
@@ -1436,7 +1468,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		}
 		catch (SQLException e) {
 			failTraces(runningTraces, e);
-			logger.warn("Failed jdbc service " + definition.getId() + ", original sql: " + originalSql + ",\nfinal sql: " + preparedSql, e);
+			logger.warn("Failed jdbc service " + definition.getId() + ", original sql: " + originalSql + ",\nraw sql: " + getDefinition().getSql() + ",\nfinal sql: " + preparedSql, e);
 			// allow dialect to wrap the exception into something more sensible
 			Exception wrappedException = dialect.wrapException(e);
 			// if it is wrapped into a service exception, just throw that
@@ -1479,10 +1511,71 @@ public class JDBCServiceInstance implements ServiceInstance {
 			}
 			if (debug != null) {
 				ServiceRuntime runtime = ServiceRuntime.getRuntime();
-				if (runtime != null && runtime.getRuntimeTracker() != null) {
-					runtime.getRuntimeTracker().report(debug);
+				if (runtime != null) {
+					runtime.report(debug);
 				}
 			}
+		}
+	}
+
+	private void mapStatisticsResult(List<String> allStatistics, List<String> statistics, ResultSet statisticsResultSet, Map<String, Statistic> statisticResults) throws SQLException {
+		while (statisticsResultSet.next()) {
+			// first we need to determine the fields that are joining the key
+			String key = "";
+			String value = "";
+			// if you have statistics with multiple values, we need to jump further to get the actual value
+			// the grouping will be a single value, but the actual values are split out into different columns
+			// e.g. grouping(battery_type_id, chemical_family_id), battery_type_id, chemical_family_id
+			int additionalCounter = 0;
+			for (int i = 0; i < allStatistics.size(); i++) {
+				String statistic = allStatistics.get(i);
+				if (!statistics.contains(statistic)) {
+					continue;
+				}
+				int amountOfFields = statistic.split(",").length;
+				if (amountOfFields > 1) {
+					additionalCounter += amountOfFields - 1;
+					// TODO: does not work correctly when actually grouping fields together! the value is not at the last position but rather spread out over the positions
+					// it is 95% ready though, just need to revisit the value resolving
+					throw new UnsupportedOperationException("We currently don't support multiple field groupings yet");
+				}
+				// is 1-based
+				long isUsed = statisticsResultSet.getLong(i + 1);
+				// it is 0 if used, otherwise 1 (kinda weird...)
+				if (isUsed == 0) {
+					if (!key.isEmpty()) {
+						key += ",";
+					}
+					// in case you are doing joins etc, a single field can appear multiple times which (without further specififying the table to use) will lead to an "ambigious" warning on the binding
+					// you can bypass this by passing in the correct table on the statistic, however you probably don't want the table name in the output
+					// in such cases of conflict, it would be highly unusual to have multiple statistics on fields with the same name
+					// in the future we could add stuff like "as", e.g. "sndd.batteryBrandId as brand"
+					// currently we just want to strip the "sndd." in that particular example
+					key += statistic.replaceAll("^.*?\\.", "");
+					// the value is exactly size() further, e.g. grouping(field2) is index 2, the actual value is 2+statistics.size() == 4
+					if (!value.isEmpty()) {
+						value += ",";
+					}
+					Object keyValue = statisticsResultSet.getObject(i + 1 + allStatistics.size() + additionalCounter);
+					if (keyValue == null) {
+						value += "null";
+					}
+					else if (keyValue instanceof String) {
+						value += keyValue;
+					}
+					else {
+						value += ConverterFactory.getInstance().getConverter().convert(keyValue, String.class);
+					}
+				}
+			}
+			// the actual amount is beyond the fields
+			long count = statisticsResultSet.getLong(allStatistics.size() * 2 + 1 + additionalCounter);
+			StatisticImpl statistic = new StatisticImpl();
+			statistic.setAmount(count);
+			statistic.setName(key);
+			statistic.setValue(value.trim().isEmpty() ? null : value);
+			statisticResults.put(statistic.getName() + "=" + statistic.getValue(), statistic);
+			logger.debug("Found statistic for requested '" + statistics + "' >> " + statistic.getName() + " = " + statistic.getValue() + " has " + count);
 		}
 	}
 	
