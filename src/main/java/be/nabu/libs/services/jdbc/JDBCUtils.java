@@ -252,6 +252,13 @@ public class JDBCUtils {
 		if (enricher != null && !enricher.trim().isEmpty()) {
 			return true;
 		}
+		// @2024-07-25 a complex type can not be persisted as is in a relational database
+		// in the future we might add a persistance strategy (e.g. marshal as json, xml, use foreign keys to update the actual records, store as is if you have a database that _does_ support it) etc
+		// we might also set a toggle on the target jdbc pool to indicate whether it supports it or perhaps on the parent type to indicate overall strategy
+		// this means it is opt in
+		if (element.getType() instanceof ComplexType) {
+			return true;
+		}
 		return false;
 	}
 	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, boolean isRoot, List<String> restrictions) {
