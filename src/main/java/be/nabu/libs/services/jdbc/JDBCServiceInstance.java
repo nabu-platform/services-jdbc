@@ -193,7 +193,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 		if (connectionId == null) {
 			ServiceRuntime runtime = ServiceRuntime.getRuntime();
 			String serviceContext = runtime == null ? null : ServiceUtils.getServiceContext(runtime);
-			throw new ServiceException("JDBC-0", "No JDBC pool configured" + serviceContext);
+			throw new ServiceException("JDBC-0", "No JDBC pool configured (service context: " + serviceContext + ")");
 		}
 		String transactionId = content == null ? null : (String) content.get(JDBCService.TRANSACTION);
 		// get the pool, we need to know if it's transactional
