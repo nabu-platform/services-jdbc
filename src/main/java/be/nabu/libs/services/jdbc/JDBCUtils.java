@@ -203,7 +203,7 @@ public class JDBCUtils {
 		return (ComplexType) DefinedTypeResolverFactory.getInstance().getResolver().resolve(foreignName.substring(lastIndexOf + 1));
 	}
 	
-	public static List<String> getForeignNameTables(String foreignName) {
+	public static List<String> getForeignNameTables1(String foreignName) {
 		int lastIndexOf = foreignName.indexOf('@');
 		if (lastIndexOf >= 0) {
 			foreignName = foreignName.substring(0, lastIndexOf);
@@ -258,6 +258,95 @@ public class JDBCUtils {
 		}
 		return tables;
 	}
+	
+	/**
+	 * When you have tables with long prefix names (e.g. notification_templates and notification_instances) combined with slightly more complex foreign names (so multiple steps deep), the collision chance becomes really high with the "old" way of doing it
+	 */
+	public static List<String> getForeignNameTables2(String foreignName) {
+		int lastIndexOf = foreignName.indexOf('@');
+		if (lastIndexOf >= 0) {
+			foreignName = foreignName.substring(0, lastIndexOf);
+		}
+		
+		lastIndexOf = foreignName.lastIndexOf(':');
+		if (lastIndexOf < 0) {
+			return null;
+		}
+		String bindings = foreignName.substring(0, lastIndexOf);
+		
+		// we need to stay under 30 characters (damn you oracle)
+		// so we see how long the binding is and generate a name based on that
+		
+		String[] split = bindings.split(":");
+		List<String> tables = new ArrayList<String>();
+		// we want the first binding to be for example "fkj_owner_id", then "fkj_owne_something_else" etc etc
+		// because we want to reuse the bindings as much as possible, irrespective of how many (or how deep) the bindings are
+		// if you do another field that just uses fkj_owner_id, you want to reuse the binding, not cut it off because the initial binding was smaller
+		for (int i = 0; i < split.length; i++) {
+			String name = NamingConvention.UNDERSCORE.apply(split[i]);
+			// we add the level to make sure it is unique
+			// we had an issue where the "short" version of a table further down was the same as the normal version of the initial binding...
+			StringBuilder builder = new StringBuilder("f" + i + "_");
+			StringBuilder fullBuilder = new StringBuilder("f" + i);
+			for (int j = 0; j <= i; j++) {
+				String partName = NamingConvention.UNDERSCORE.apply(split[j]);
+				builder.append(partName.substring(0, 1).toLowerCase());
+				fullBuilder.append("_").append(partName);
+			}
+			// add a hash based on the full name to make it unique-ish
+			// if hashcode has too many conflicts, switch to md5
+			builder.append("_").append(Math.abs(fullBuilder.toString().hashCode()));
+			tables.add(builder.toString());
+		}
+		return tables;
+	}
+	
+	public static List<String> getForeignNameTables(String foreignName) {
+		int lastIndexOf = foreignName.indexOf('@');
+		if (lastIndexOf >= 0) {
+			foreignName = foreignName.substring(0, lastIndexOf);
+		}
+		
+		lastIndexOf = foreignName.lastIndexOf(':');
+		if (lastIndexOf < 0) {
+			return null;
+		}
+		String bindings = foreignName.substring(0, lastIndexOf);
+		
+		// we need to stay under 30 characters (damn you oracle)
+		// so we see how long the binding is and generate a name based on that
+		
+		String[] split = bindings.split(":");
+		List<String> tables = new ArrayList<String>();
+		// we want the first binding to be for example "fkj_owner_id", then "fkj_owne_something_else" etc etc
+		// because we want to reuse the bindings as much as possible, irrespective of how many (or how deep) the bindings are
+		// if you do another field that just uses fkj_owner_id, you want to reuse the binding, not cut it off because the initial binding was smaller
+		for (int i = 0; i < split.length; i++) {
+			String name = NamingConvention.UNDERSCORE.apply(split[i]);
+			// we add the level to make sure it is unique
+			// we had an issue where the "short" version of a table further down was the same as the normal version of the initial binding...
+			StringBuilder builder = new StringBuilder();
+			StringBuilder fullBuilder = new StringBuilder();
+			boolean first = true;
+			for (int j = 0; j <= i; j++) {
+				String partName = NamingConvention.UNDERSCORE.apply(split[j]);
+				fullBuilder.append("_").append(partName);
+				if (first) {
+					first = false;
+				}
+				else {
+					builder.append("_");
+				}
+				builder.append(partName.replaceAll("(?:_|^)([^_]{1})[^_]*", "$1"));
+			}
+			// add a hash based on the full name to make it unique-ish
+			// if hashcode has too many conflicts, switch to md5
+			builder.append("_").append(Math.abs(fullBuilder.toString().hashCode()));
+			tables.add(builder.toString());
+		}
+		return tables;
+	}
+	
 	private static boolean ignoreField(Element<?> element) {
 		// a foreign name indicates an imported field which should not be persisted
 		String foreignName = ValueUtils.getValue(ForeignNameProperty.getInstance(), element.getProperties());
