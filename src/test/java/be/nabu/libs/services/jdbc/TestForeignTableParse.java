@@ -61,15 +61,15 @@ public class TestForeignTableParse extends TestCase {
 		String foreignName2 = "ownerId:parentId:name";
 		String foreignName3 = "ownerId:parentId:siblingId:parentId:ownerId:name";
 		assertEquals(
-			Arrays.asList("oi_1753665414"),
+			Arrays.asList("f0_oi_1989460420"),
 			JDBCUtils.getForeignNameTables(foreignName1)
 		);
 		assertEquals(
-			Arrays.asList("oi_1753665414", "oi_pi_135443625"),
+			Arrays.asList("f0_oi_1989460420", "f1_oi_pi_1389962476"),
 			JDBCUtils.getForeignNameTables(foreignName2)
 		);
 		assertEquals(
-			Arrays.asList("oi_1753665414", "oi_pi_135443625", "oi_pi_si_124918176", "oi_pi_si_pi_1744714993", "oi_pi_si_pi_oi_1307546037"),
+			Arrays.asList("f0_oi_1989460420", "f1_oi_pi_1389962476", "f2_oi_pi_si_1612884268", "f3_oi_pi_si_pi_1580857470", "f4_oi_pi_si_pi_oi_1305684711"),
 			JDBCUtils.getForeignNameTables(foreignName3)
 		);
 	}

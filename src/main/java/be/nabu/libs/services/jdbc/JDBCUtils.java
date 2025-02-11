@@ -301,6 +301,9 @@ public class JDBCUtils {
 		return tables;
 	}
 	
+	/**
+	 * IMPORTANT: we MUST retain the f0_ etc prefix naming because logic in JDBCService depends on that prefix being there (!!)
+	 */
 	public static List<String> getForeignNameTables(String foreignName) {
 		int lastIndexOf = foreignName.indexOf('@');
 		if (lastIndexOf >= 0) {
@@ -325,8 +328,8 @@ public class JDBCUtils {
 			String name = NamingConvention.UNDERSCORE.apply(split[i]);
 			// we add the level to make sure it is unique
 			// we had an issue where the "short" version of a table further down was the same as the normal version of the initial binding...
-			StringBuilder builder = new StringBuilder();
-			StringBuilder fullBuilder = new StringBuilder();
+			StringBuilder builder = new StringBuilder("f" + i + "_");
+			StringBuilder fullBuilder = new StringBuilder("f" + i);
 			boolean first = true;
 			for (int j = 0; j <= i; j++) {
 				String partName = NamingConvention.UNDERSCORE.apply(split[j]);
