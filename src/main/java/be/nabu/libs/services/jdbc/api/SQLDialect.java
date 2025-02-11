@@ -564,6 +564,10 @@ public interface SQLDialect {
 					// if we are at depth 0, we are in the core select, we want to rewrite that
 					if (depth == 0) {
 						String second = query.substring(index);
+						// @2025-02-11: when you have a depth 0 reference to the word select (e.G. it is part of a field name like "age_selection", it will replace that as well...
+						if (!second.matches("(?i)(?s)^select\\b.*")) {
+							continue;
+						}
 						// we append the begin part, whatever it may be (e.g. a with)
 						builder.append(first);
 						String[] split2 = second.toLowerCase().split("(?i)[\\s]*\\bfrom\\b");

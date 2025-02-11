@@ -122,7 +122,7 @@ public interface JDBCTranslator {
 	
 	@WebResult(name = "mappedLanguage")
 	// allow you to map the language we receive (e.g. "en") into a value that can be mapped (e.g. a masterdata entry id)
-	public default String mapLanguage(@WebParam(name = "language") String language) {
+	public default String mapLanguage(@WebParam(name = "connectionId") String connectionId, @WebParam(name = "language") String language) {
 		return language;
 	}
 }

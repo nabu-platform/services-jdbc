@@ -490,7 +490,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				// this potentially uses a default method which does not work in java 8. for this reason we only do this call if it is absolutely necessary
 				TranslationBinding translationBinding = translator != null ? translator.getBinding() : null;
 				if (translationBinding != null) {
-					preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), translationBinding, translator.mapLanguage(language));
+					preparedSql = rewriteTranslated(preparedSql, getDefinition().getResults(), translationBinding, translator.mapLanguage(connectionId, language));
 					translatedBindings = true;
 				}
 			}
