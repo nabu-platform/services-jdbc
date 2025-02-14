@@ -1622,11 +1622,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 					index = null;
 					while (index == null || index >= 0) {
 						index = fields.toLowerCase().indexOf(",", index == null ? -1 : index + 1);
-						if (index >= 0) {			
-							depth = (fields.length() - fields.replace("(", "").length()) - (fields.length() - fields.replace(")", "").length());
+						if (index >= 0) {
+							String partToCheck = fields.substring(0, index).trim();
+							depth = (partToCheck.length() - partToCheck.replace("(", "").length()) - (partToCheck.length() - partToCheck.replace(")", "").length());
 							// we are not in the middle of a call like: to_date(test, 'dd/mm')
 							if (depth == 0) {
-								fieldSelections.add(fields.substring(0, index).trim());
+								fieldSelections.add(partToCheck);
 								fields = fields.substring(index + 1);
 								index = 0;
 							}
