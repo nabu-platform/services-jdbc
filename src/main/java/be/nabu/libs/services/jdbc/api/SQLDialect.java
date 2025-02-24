@@ -560,7 +560,10 @@ public interface SQLDialect {
 				index = query.toLowerCase().indexOf("select", index == null ? -1 : index + 1);
 				if (index >= 0) {
 					String first = query.substring(0, index);
-					int depth = (first.length() - first.replace("(", "").length()) - (first.length() - first.replace(")", "").length());
+					// @2025-02-24: someone was writing comments like this: -- 1) ...
+					// this falsely triggered the bracket count in test query 2 for the subselect "select 1 from unnest..."
+					String firstNoComments = first.replaceAll("(?m)--.*$", "");
+					int depth = (firstNoComments.length() - firstNoComments.replace("(", "").length()) - (firstNoComments.length() - firstNoComments.replace(")", "").length());
 					// if we are at depth 0, we are in the core select, we want to rewrite that
 					if (depth == 0) {
 						String second = query.substring(index);
