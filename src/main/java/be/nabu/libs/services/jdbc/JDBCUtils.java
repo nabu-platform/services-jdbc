@@ -108,7 +108,9 @@ public class JDBCUtils {
 		
 		List<String> collectionNames = new ArrayList<String>();
 		// we want to add the root collection
-		String rootCollection = ValueUtils.getValue(CollectionNameProperty.getInstance(), type.getProperties());
+//		String rootCollection = ValueUtils.getValue(CollectionNameProperty.getInstance(), type.getProperties());
+		// @2025-03-03: if your extension does not have its own collection (e.g. extension for restriction or enrichment), we need to dig deeper
+		String rootCollection = getTypeName(type, true);
 		if (rootCollection == null) {
 			rootCollection = NamingConvention.UNDERSCORE.apply(type.getName());
 		}
@@ -370,8 +372,26 @@ public class JDBCUtils {
 		}
 		return false;
 	}
-	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, boolean isRoot, List<String> restrictions) {
-		String typeCollectionName = getTypeName(type, isRoot);
+	
+	// @2025-03-03: in recursion we disable the "root" boolean
+	// however, we have a case where node < extension1 < extension2 and both the extensions only restrict
+	// in that case extension2 (the "root" for our update) would resolve to "nodes" as typecollectionname but the non-recursive lookup to extension1 would end up "null"
+	// this would still be allowed by the condition to recurse which makes an exception for collection name null
+	// however, when resolving extension1 with the boolean set to false, the "typeCollectionName" becomes null while the collectionName (now derived from nodes) equals "nodes"
+	// this no longer passes so we don't go all the way up the chain
+	// intended behavior is (presumably) to go all the way up to the first table in this particular usecase
+	// on the flipside, consider the following usecase: node < organisation < school
+	// suppose organisation does NOT get a dedicated table, but school does. this means the fields in organisation need to be absorbed into the school level, NOT the nodes level
+	// by resolving "upwards", they would be squished into the nodes table which is not what we want
+	// this means we don't resolve upwards to find for instance the primary key but this is not needed because we use the "duplicate" for this, however, this is only for database table extension!!
+	// we don't want to force people to use duplicate and/or copy collection names when they are making extensions for restriction and/or enrichment
+	// instead we do a _deep_ lookup when you are at the root level (for ext2 this ends with "nodes", for schools, this ends with "schools")
+	// we then pass this level down to the level below when we are checking
+	// if the level below is null (e.g. ext1, organisation), it is absorbed into the upper layer (as originally intended)
+	// if however, we go up even further, we don't compare "nodes" to "null" (based on ext1 only) but against "nodes" which is passed in
+	// because nodes == nodes, we merge downwards in the ext1 example but because schools != nodes, we stop merging at that point
+	private static void getFieldsInTable(ComplexType type, Map<String, Element<?>> children, String currentTable, List<String> restrictions) {
+		String typeCollectionName = getTypeName(type, currentTable == null);
 		
 		// we add the fields we explicitly tagged as inherited
 		String duplicated = ValueUtils.getValue(DuplicateProperty.getInstance(), type.getProperties());
@@ -401,8 +421,8 @@ public class JDBCUtils {
 		if (superType instanceof ComplexType) {
 			String collectionName = ValueUtils.getValue(CollectionNameProperty.getInstance(), superType.getProperties());
 			// if it doesn't or it is the same table, it is absorbed into the current table
-			if (collectionName == null || collectionName.equalsIgnoreCase(typeCollectionName)) {
-				getFieldsInTable((ComplexType) superType, children, false, restrictions);
+			if (collectionName == null || collectionName.equalsIgnoreCase(typeCollectionName) || collectionName.equals(currentTable)) {
+				getFieldsInTable((ComplexType) superType, children, typeCollectionName == null ? currentTable : typeCollectionName, restrictions);
 			}
 		}
 	}
@@ -427,7 +447,7 @@ public class JDBCUtils {
 	}
 	public static List<Element<?>> getFieldsInTable(ComplexType type) {
 		Map<String, Element<?>> children = new LinkedHashMap<String, Element<?>>();
-		getFieldsInTable(type, children, true, new ArrayList<String>());
+		getFieldsInTable(type, children, null, new ArrayList<String>());
 		return new ArrayList<Element<?>>(children.values());
 	}
 	
