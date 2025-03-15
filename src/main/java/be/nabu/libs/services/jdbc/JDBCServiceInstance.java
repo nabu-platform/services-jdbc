@@ -661,6 +661,12 @@ public class JDBCServiceInstance implements ServiceInstance {
 
 			// make sure we do a total count statement without limits & offsets
 			boolean includeTotalCount = content == null || content.get(JDBCService.INCLUDE_TOTAL_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_TOTAL_COUNT);
+			boolean includeInlineCount = content == null || content.get(JDBCService.INCLUDE_INLINE_COUNT) == null ? false : (Boolean) content.get(JDBCService.INCLUDE_INLINE_COUNT);
+			
+			// don't do an inline count if we are not limiting the resultset or if we are requesting a lazy resultset
+			if (includeInlineCount && (limit == null || lazy)) {
+				includeInlineCount = false;
+			}
 			
 			// for postgres (and perhaps others?) actually counting results is very time consuming
 			// we had a query on a million rows that had a cost of 450, the total count (on the id field) was 150.000 cost
@@ -695,6 +701,15 @@ public class JDBCServiceInstance implements ServiceInstance {
 				}
 				totalCountStatement = connection.prepareStatement(totalCountSql);
 				totalCountTrace = tracer.newTrace(definition.getId(), "total-count", totalCountSql);
+			}
+			else if (includeInlineCount) {
+				String injectedSql = JDBCService.injectTotalCount(preparedSql);
+				if (injectedSql == null) {
+					includeInlineCount = false;
+				}
+				else {
+					preparedSql = injectedSql;
+				}
 			}
 			
 			List<String> statistics = content == null || content.get(JDBCService.STATISTICS) == null ? null : (List<String>) content.get(JDBCService.STATISTICS);
@@ -942,6 +957,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 					}
 				}
 				ComplexContent output = getDefinition().getOutput().newInstance();
+				Long inlineTotalCount = null;
 				if (isBatch) {
 					Element<?> primaryKey = null;
 					List<Object> primaryKeys = null;
@@ -1272,6 +1288,9 @@ public class JDBCServiceInstance implements ServiceInstance {
 						try {
 							boolean hasNext = false;
 							while (executeQuery.next()) {
+								if (includeInlineCount && inlineTotalCount == null) {
+									inlineTotalCount = executeQuery.getLong("injected_inline_total_count");
+								}
 								// if we don't have a native (dialect) limit but we did set an offset, do it programmatically
 								if (!nativeLimit && offset != null) {
 									recordCounter++;
@@ -1351,7 +1370,10 @@ public class JDBCServiceInstance implements ServiceInstance {
 					totalCountTrace.stop();
 					runningTraces.remove(totalCountTrace);
 				}
-				else if (includeTotalCount) {
+				else if (includeInlineCount && inlineTotalCount != null) {
+					output.set(JDBCService.TOTAL_ROW_COUNT, inlineTotalCount);
+				}
+				else if (includeTotalCount || includeInlineCount) {
 					output.set(JDBCService.TOTAL_ROW_COUNT, output.get(JDBCService.ROW_COUNT));
 				}
 				

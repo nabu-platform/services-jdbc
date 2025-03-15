@@ -120,6 +120,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	public static final String OFFSET = "offset";
 	public static final String LIMIT = "limit";
 	public static final String INCLUDE_TOTAL_COUNT = "totalRowCount";
+	public static final String INCLUDE_INLINE_COUNT = "inlineRowCount";
 	public static final String INCLUDE_ESTIMATE_COUNT = "estimateRowCount";
 	public static final String TRACK_CHANGES = "trackChanges";
 	public static final String LAZY = "lazy";
@@ -166,6 +167,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 					input.add(new SimpleElementImpl<String>(ORDER_BY, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<String>(STATISTICS, wrapper.wrap(String.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0), new ValueImpl<Integer>(MaxOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(INCLUDE_TOTAL_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
+					input.add(new SimpleElementImpl<Boolean>(INCLUDE_INLINE_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(INCLUDE_ESTIMATE_COUNT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0)));
 					input.add(new SimpleElementImpl<Boolean>(HAS_NEXT, wrapper.wrap(Boolean.class), input, new ValueImpl<Integer>(MinOccursProperty.getInstance(), 0),
 							new ValueImpl<Scope>(ScopeProperty.getInstance(), Scope.PRIVATE)));
@@ -669,7 +671,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 		this.dataSourceResolver = dataSourceResolver;
 	}
 
-	private String getNormalizedDepth(String sql, int wantedDepth) {
+	private static String getNormalizedDepth(String sql, int wantedDepth, boolean cleanup) {
 		StringBuilder builder = new StringBuilder();
 		int depth = 0;
 		for (int i = 0; i < sql.length(); i++) {
@@ -683,7 +685,10 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 				builder.append(sql.charAt(i));
 			}
 		}
-		return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
+		if (cleanup) {
+			return builder.toString().replaceAll("[\\s]+", " ").trim().toLowerCase();
+		}
+		return builder.toString();
 	}
 	
 	private String getBindingName(String fieldName, List<ComplexType> types, Map<ComplexType, String> bindingNames) {
@@ -708,6 +713,56 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 		return null;
 	}
 	
+	// hard to make work correctly with CTE's atm, support can be added if necessary later on
+	public static String injectTotalCount(String sql) {
+		sql = sql.trim();
+		if (sql.startsWith("select")) {
+			// limit it to the "select...from", we may have stripped too much later on (with nested queries etc) to be relevant
+			// note that we may also have stripped functions etc in the select! e.g. date_trunc()
+			String select = sql.replaceAll("(?s)(?i)^(select\\b.*?[\\s]*\\bfrom)\\b.*", "$1");
+			// if we have a distinct select, we need to wrap it, otherwise the inline count will count WITHOUT distinct applied
+			// note however that wrapping it, requires wrapping the CORRECT part of the query which can not be deduced from the normalizeddepth return (this strips anything not at level 0, including nested queries etc)
+			// in that case, the full sql MUST be wrappable (looking at your CTE...)
+			if (select.matches("(?s)(?i)^select[\\s]+distinct\\b.*")) {
+				sql = "select *, count(1) over () as injected_inline_total_count from (" + sql + ")";
+			}
+			else {
+				int endIndex = -1;
+				int offset = 0;
+				int depth = 0;
+				for (String part : sql.split("\\bfrom\\b")) {
+					if (part.contains("(")) {
+						depth += (part.length() - part.replace("(", "").length());
+					}
+					if (part.contains(")")) {
+						depth -= (part.length() - part.replace(")", "").length());
+					}
+					offset += part.length();
+					// we must get the index before the from
+					if (endIndex < 0 && depth == 0) {
+						endIndex = offset;
+					}
+					// if we go beyond this piece, add the from offset also
+					offset += "from".length();
+					// in this particular case, no need to continue, we have found our "from"
+					if (endIndex >= 0) {
+						break;
+					}
+				}
+				if (endIndex >= 0) {
+					sql = sql.substring(0, endIndex).trim() + ",\n\tcount(1) over () as injected_inline_total_count\n" + sql.substring(endIndex);
+				}
+				else {
+					return null;
+				}
+//				String newBase = base.replaceAll("(?s)(?i)^(select\\b)(.*?)([\\s]*\\bfrom)\\b", "$1$2,\n\tcount(1) over () as injected_inline_total_count$3");
+//				sql = sql.replace(base, newBase);
+			}
+			return sql;
+		}
+		return null;
+	}
+	
 	// expand a select * into actual fields if you have a defined output
 	public String expandSql(String sql, List<String> orderBys) {
 		// currently we only expand into the table itself
@@ -717,7 +772,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 		boolean supportForeigNameExpansion = true;
 		// only expand if we did not generate the output, we must have a defined value
 		if (!this.isOutputGenerated()) {
-			String base = this.getNormalizedDepth(sql, 0);
+			String base = getNormalizedDepth(sql, 0, true);
 			// if we do a select *, we want to dynamically match the output definition
 			if (base.startsWith("select * from ") || base.startsWith("select distinct * from")) {
 				List<String> fromBlacklist = Arrays.asList(",", "left", "outer", "inner", "join", "right", "on");
