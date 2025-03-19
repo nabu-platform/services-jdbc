@@ -215,7 +215,7 @@ public class TestInlineCountQuery extends TestCase {
 				+ "		or lower(o.commercial_name) like '%' || lower(?) || '%'\n"
 				+ "	)\n"
 				+ "	and (?::uuid[] is null or n.id = any(?::uuid[]))\n"
-				+ " ORDER BY 12 asc OFFSET 0 LIMIT 10)";
+				+ " ORDER BY 12 asc OFFSET 0 LIMIT 10) a";
 		String injectTotalCount = JDBCService.injectTotalCount(sql);
 		assertEquals(expected, injectTotalCount);
 	}

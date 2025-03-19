@@ -724,7 +724,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			// note however that wrapping it, requires wrapping the CORRECT part of the query which can not be deduced from the normalizeddepth return (this strips anything not at level 0, including nested queries etc)
 			// in that case, the full sql MUST be wrappable (looking at your CTE...)
 			if (select.matches("(?s)(?i)^select[\\s]+distinct\\b.*")) {
-				sql = "select *, count(1) over () as injected_inline_total_count from (" + sql + ")";
+				sql = "select *, count(1) over () as injected_inline_total_count from (" + sql + ") a";
 			}
 			else {
 				int endIndex = -1;
