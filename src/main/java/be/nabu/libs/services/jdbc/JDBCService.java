@@ -36,6 +36,7 @@ import be.nabu.libs.artifacts.api.ExceptionDescription.ExceptionType;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.services.api.DefinedService;
+import be.nabu.libs.services.api.ExecutionContextProvider;
 import be.nabu.libs.services.api.ServiceInstance;
 import be.nabu.libs.services.api.ServiceInterface;
 import be.nabu.libs.services.jdbc.api.ChangeTracker;
@@ -105,6 +106,7 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 	private boolean isInputGenerated = true, isOutputGenerated = true;
 	private Boolean validateInput, validateOutput;
 	private DynamicDataSourceResolver dataSourceResolver;
+	private ExecutionContextProvider executionContextProvider;
 	
 	/**
 	 * We currently do not support multiple columns but we could if we dynamically generate new documents containing the lists instead of just a list of long
@@ -1182,5 +1184,13 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 		descriptions.add(new ExceptionDescriptionImpl("JDBC-23", "JDBC-23", "No primary key", "Could not find primary key in the input, it is needed for automatic change tracking"));
 		descriptions.add(new ExceptionDescriptionImpl("JDBC-24", "JDBC-24", "Invalid result type", "Can not convert the result of the query to the given output type", ExceptionType.DESIGN));
 		return descriptions;
+	}
+
+	public ExecutionContextProvider getExecutionContextProvider() {
+		return executionContextProvider;
+	}
+
+	public void setExecutionContextProvider(ExecutionContextProvider executionContextProvider) {
+		this.executionContextProvider = executionContextProvider;
 	}
 }

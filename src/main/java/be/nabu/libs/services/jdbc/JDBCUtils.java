@@ -24,7 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import be.nabu.eai.api.NamingConvention;
+import be.nabu.libs.artifacts.NamingConvention;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
 import be.nabu.libs.types.DefinedTypeResolverFactory;

@@ -48,8 +48,8 @@
 			<artifactId>services-pojo</artifactId>
 		</dependency>
 		<dependency>
-			<groupId>be.nabu.eai</groupId>
-			<artifactId>eai-repository</artifactId>
+			<groupId>be.nabu.libs.tracer</groupId>
+			<artifactId>tracer-api</artifactId>
 		</dependency>
 	</dependencies>
 </project>

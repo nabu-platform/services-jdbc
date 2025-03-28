@@ -17,6 +17,7 @@
 
 package be.nabu.libs.services.jdbc;
 
+import java.security.Principal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -28,6 +29,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -42,24 +44,24 @@ import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import be.nabu.eai.api.NamingConvention;
-import be.nabu.eai.repository.EAIResourceRepository;
-import be.nabu.eai.repository.api.Repository;
-import be.nabu.eai.repository.util.SystemPrincipal;
+import be.nabu.libs.artifacts.NamingConvention;
 import be.nabu.libs.artifacts.api.Artifact;
 import be.nabu.libs.artifacts.api.ArtifactProxy;
 import be.nabu.libs.artifacts.api.ExternalDependency;
 import be.nabu.libs.artifacts.api.ExternalDependencyArtifact;
+import be.nabu.libs.authentication.api.Token;
 import be.nabu.libs.converter.ConverterFactory;
 import be.nabu.libs.converter.api.Converter;
 import be.nabu.libs.metrics.api.MetricInstance;
 import be.nabu.libs.metrics.api.MetricTimer;
 import be.nabu.libs.property.ValueUtils;
 import be.nabu.libs.property.api.Value;
+import be.nabu.libs.services.DefinedServiceResolverFactory;
 import be.nabu.libs.services.ServiceRuntime;
 import be.nabu.libs.services.ServiceUtils;
 import be.nabu.libs.services.TransactionCloseable;
 import be.nabu.libs.services.api.ExecutionContext;
+import be.nabu.libs.services.api.ExecutionContextProvider;
 import be.nabu.libs.services.api.Service;
 import be.nabu.libs.services.api.ServiceException;
 import be.nabu.libs.services.api.ServiceInstance;
@@ -151,13 +153,31 @@ public class JDBCServiceInstance implements ServiceInstance {
 		return sql.matches("(?is)^[\\s]+is[\\s]+null\\b.*") || sql.matches("(?is)^[\\s]+is[\\s]+not[\\s]+null\\b.*");
 	}
 	
-	public static ChangeTracker getAsChangeTracker(Repository repository, String id) {
+	public static ChangeTracker getAsChangeTracker(ExecutionContextProvider provider, String id) {
 		if (id != null && !id.trim().isEmpty()) {
-			Service changeTracker = (Service) repository.resolve(id);
+			Service changeTracker = DefinedServiceResolverFactory.getInstance().getResolver().resolve(id);
 			if (changeTracker == null) {
 				throw new IllegalArgumentException("Could not find change tracker: " + id);
 			}
-			return POJOUtils.newProxy(ChangeTracker.class, repository, SystemPrincipal.ROOT, changeTracker);
+			return POJOUtils.newProxy(ChangeTracker.class, provider, new Token() {
+				private static final long serialVersionUID = 1L;
+				@Override
+				public String getName() {
+					return "root";
+				}
+				@Override
+				public String getRealm() {
+					return "$system";
+				}
+				@Override
+				public Date getValidUntil() {
+					return null;
+				}
+				@Override
+				public List<Principal> getCredentials() {
+					return null;
+				}
+			}, changeTracker);
 		}
 		return null;
 	}
@@ -186,8 +206,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 		// if we pass in a change tracker id and trackChanges is not explicitly set, we set it explicitly
 		String changeTrackerId = content == null ? null : (String) content.get(JDBCService.CHANGE_TRACKER);
 		ChangeTracker changeTracker = null;
-		if (changeTrackerId != null) {
-			changeTracker = getAsChangeTracker(EAIResourceRepository.getInstance(), changeTrackerId);
+		if (changeTrackerId != null && definition.getExecutionContextProvider() != null) {
+			changeTracker = getAsChangeTracker(definition.getExecutionContextProvider(), changeTrackerId);
 		}
 		if (changeTracker == null) {
 			changeTracker = definition.getChangeTracker();
