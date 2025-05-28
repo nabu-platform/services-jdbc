@@ -1639,6 +1639,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 	}
 	
 	public static String rewriteTranslated(String query, ComplexType definition, TranslationBinding binding, String language) {
+		// If you don't have a single table with the full binding in it (e.g. you have terms and translations separately)
+		// you can create a view to reduce it to a single binding.
 		StringBuilder builder = new StringBuilder();
 		String fromString = null;
 		Integer index = null;
