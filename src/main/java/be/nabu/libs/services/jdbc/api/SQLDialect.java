@@ -396,7 +396,8 @@ public interface SQLDialect {
 		}
 		else {
 			if (collection.isEmpty()) {
-				statement.setNull(index, getSQLType(element), sqlTypeName);
+				statement.setNull(index, Types.ARRAY, getSQLNullName(element));
+//				statement.setNull(index, getSQLType(element), sqlTypeName);
 			}
 			else {
 				// we can either create an array that is specific to the database

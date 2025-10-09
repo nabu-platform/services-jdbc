@@ -1393,7 +1393,7 @@ public class JDBCServiceInstance implements ServiceInstance {
 				else if (includeInlineCount && inlineTotalCount != null) {
 					output.set(JDBCService.TOTAL_ROW_COUNT, inlineTotalCount);
 				}
-				else if (includeTotalCount || includeInlineCount) {
+				else if (limit == null || includeTotalCount || includeInlineCount) {
 					output.set(JDBCService.TOTAL_ROW_COUNT, output.get(JDBCService.ROW_COUNT));
 				}
 				
