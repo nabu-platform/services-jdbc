@@ -1335,8 +1335,8 @@ public class JDBCServiceInstance implements ServiceInstance {
 									throw new ServiceException("JDBC-24", "Invalid type", e);
 								}
 								output.set(JDBCService.RESULTS + "[" + index++ + "]", result);
-								output.set(JDBCService.HAS_NEXT, hasNext);
 							}
+							output.set(JDBCService.HAS_NEXT, hasNext);
 							// if we have a language that differs from the default one, we need to translate the results
 							if (!translatedBindings && language != null && dataSourceProvider instanceof DataSourceWithTranslator && ((DataSourceWithTranslator) dataSourceProvider).getTranslator() != null
 								&& (((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage() == null || !((DataSourceWithTranslator) dataSourceProvider).getDefaultLanguage().equals(language))) {
