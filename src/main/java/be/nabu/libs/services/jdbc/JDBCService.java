@@ -762,6 +762,10 @@ public class JDBCService implements DefinedService, ArtifactWithExceptions {
 			}
 			return sql;
 		}
+		// CTEs _can_ be wrapped
+		else if (sql.startsWith("with")) {
+			return "select *, count(1) over () as injected_inline_total_count from (" + sql + ") a";
+		}
 		return null;
 	}
 	
