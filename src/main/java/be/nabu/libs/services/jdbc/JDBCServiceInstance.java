@@ -1951,16 +1951,20 @@ public class JDBCServiceInstance implements ServiceInstance {
 						preparedSql = preparedSql.replaceAll("\\b" + table + "~", table + affix);
 					}
 				}
-				// do a replace all for remaining tildes based on the given affix
+				// do a replace all for remaining affix markers based on the given affix
 				else {
-					preparedSql = preparedSql.replace("~", affix);
+					preparedSql = replaceAffixMarkers(preparedSql, affix);
 				}
 			}
 		}
 		
 		// replace any remaining affix notations (should only be because you didn't have any...)
-		preparedSql = preparedSql.replace("~", "");
+		preparedSql = replaceAffixMarkers(preparedSql, "");
 		return preparedSql;
+	}
+
+	private static String replaceAffixMarkers(String sql, String affix) {
+		return sql.replaceAll("(?<=\\S)~|~(?=\\S)", Matcher.quoteReplacement(affix));
 	}
 
 	private String getTableName(PreparedStatement statement, int position) {
